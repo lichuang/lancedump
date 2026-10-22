@@ -5,16 +5,33 @@ A read-only inspector for Lance data files.
 `ldp` opens a single Lance data file (`data/*.lance`) and explains its physical
 structure: the footer, the embedded schema, column metadata, pages, page layouts
 (mini-block, full-zip, sparse, constant, blob), and the page-internal structures
-behind them. It never modifies data and does not require a dataset manifest.
+behind them.
 
-**Status:** design phase. This README defines the v1 command surface and the
-order in which the commands are implemented. No commands are implemented yet.
+`ldp` never modifies data and does not require a dataset manifest.
+
+> Development status and implementation phases: [docs/phase.md](docs/phase.md).
 
 ---
 
-## Scope
+## Install
 
-### Input
+```bash
+cargo build --release
+# binary: target/release/ldp
+
+# or install into ~/.cargo/bin
+cargo install --path .
+```
+
+Running from the repository:
+
+```bash
+cargo run -- info path/to/data/xxxxxxxx.lance
+```
+
+---
+
+## Input
 
 One local Lance **data file**:
 
@@ -22,180 +39,35 @@ One local Lance **data file**:
 ldp info path/to/data/xxxxxxxx.lance
 ```
 
-Dataset directories, manifests, and object-store URIs are out of scope for v1.
+Dataset directories, manifests, and object-store URIs are not accepted in v1.
 
-### What a data file can answer by itself
+A Lance data file describes its physical layout by itself. The following items
+are **not** available without the dataset manifest, and `ldp` reports them as
+raw columns instead:
 
-Everything about the physical layout:
-
-- format version and the five file regions (data, column metadata, CMO, GBO, footer)
-- schema: field ids, names, logical types, nullability, metadata
-- per-column page lists and buffer ranges
-- per-page layout: `MiniBlock` / `FullZip` / `Sparse` / `Constant` / `Blob`, plus
-  compression, rep/def layers, item counts, dictionary, repetition index depth
-- page bytes: mini-block chunk metadata, chunk headers, rep/def/value ranges,
-  repetition index and full-zip repetition index
-- global buffers (schema is `GBO[0]`; the rest is opaque bytes with keys in
-  schema metadata)
-
-### What needs the dataset manifest (v1: shown as raw columns)
-
-- **field id -> column index** mapping. The file stores the schema but not the
-  mapping; it lives in the manifest's `DataFile.fields` / `column_indices`.
-  Therefore `columns` labels columns by index, not by field name.
+- field id -> column index mapping (manifest `DataFile.fields` / `column_indices`)
 - deletion vectors, fragment ids, row addresses, stable row ids
 - blob v2 sidecars and external base paths
 - index coverage and dataset-level versioning
 
-A future `--dataset <root>` option may load the manifest to bind columns to field
-names and resolve the items above. It is not part of v1.
-
 ---
 
-## Command surface
+## Commands
 
-All commands take exactly one file. `--format text|json` is global; `text` is the
-default and `json` is stable enough for scripting.
+All commands take exactly one file. `--format text|json` is global:
 
-The table is ordered by implementation dependency: each command only relies on
-what earlier commands already parse.
-
-| Order | Command | Adds | Answers |
-|---|---|---|---|
-| M0 | `ldp hexdump <FILE>` | byte-range reads | "what are these raw bytes?" |
-| M1 | `ldp info <FILE>` | footer, GBO/CMO, schema + columns load | "what is this file?" |
-| M2 | `ldp schema <FILE>` | schema tree rendering | "what logical fields does it contain?" |
-| M3 | `ldp columns <FILE>` | column summaries | "how many pages/bytes per column?" |
-| M4 | `ldp pages <FILE>` | `PageLayout` decoding | "where are the pages and how are they laid out?" |
-| M5 | `ldp page <FILE>` | page-byte I/O, chunk tables, rep index | "what is inside this one page?" |
-| M6 | `ldp chunks <FILE>` | mini-block focus (subset of M5) | "show me the chunk table" |
-| M7 | `ldp check <FILE>` | validation over M1-M6 | "is this file structurally sane?" |
-
-Dependency graph:
-
-```text
-hexdump                         (independent primitive)
-
-info                            container layer
- ├── schema                     view of GBO[0]
- ├── columns                    view of CMO
- ├── pages                      + decode PageLayout (metadata only)
- │    └── page                  + read page bytes, chunk table, rep index
- │         └── chunks           mini-block subset of page
- └── check                      validation on top of all of the above
-```
-
----
-
-## Implementation order
-
-Each milestone should be finished (implemented, exercised against real files, and
-documented) before starting the next one.
-
-### M0 - `hexdump`
-
-No parser dependencies. Establishes `read_at(offset, len)` and the hex renderer.
-
-Done when:
-
-- `ldp hexdump f.lance --offset 0 --length 64` prints an offset / hex / ASCII view
-- out-of-range reads fail with a clear error, not a panic
-
-### M1 - `info`
-
-The foundational command. It must load the container without touching any page
-bytes or `PageLayout`.
-
-Done when:
-
-- parses the 40-byte footer (magic, version, three offsets, two counts)
-- validates region order and CMO/GBO table sizes
-- decodes `GBO[0]` as `FileDescriptor` (schema + row count)
-- decodes every column metadata record (page count, buffer ranges)
-- prints path, size, version, rows, region table, global buffer table, column
-  summary
-- legacy v1 files print version + regions with an explicit "not decoded" warning
-- `--format json` emits the same fields
-
-### M2 - `schema`
-
-Pure rendering of the schema already loaded by M1.
-
-Done when:
-
-- prints a tree using `parent_id`, including field id, name, logical type,
-  nullability, and field metadata
-- prints schema-level metadata
-- malformed parent links degrade to a flat listing instead of failing
-
-### M3 - `columns`
-
-Done when:
-
-- one row per column: page count, summed page rows, column-buffer count, bytes,
-  column encoding kind, layout kinds present
-- `--column N` filters and reports a useful error for a missing index
-- no page bytes are read (still metadata-only)
-
-### M4 - `pages`
-
-First milestone that decodes `Page.encoding` (`Any` -> `PageLayout`).
-
-Done when:
-
-- one row per page: column, page, position, bytes, rows, priority, buffer count,
-  layout kind and a short parameter summary
-- `--column N` filters
-- unknown/undecodable encodings become warnings, not hard failures
-
-### M5 - `page`
-
-Deepest per-page view.
-
-Done when:
-
-- decodes the full `PageLayout`, including compression names and rep/def layers
-- lists page buffers with roles (chunk metadata / chunk data / dictionary /
-  repetition index / zipped values)
-- parses the mini-block chunk table: 2-byte (v2.1) or 4-byte (v2.2+) metadata
-  entries, chunk offsets/sizes, value counts, chunk header, rep/def/value ranges
-- parses the mini-block repetition index (`depth + 1` u64 per chunk) and the
-  full-zip repetition index (byte-packed width + sentinel)
-- `--hex` adds a bounded hex dump per buffer; `--hex-limit` controls the bound
-- `--raw` prints the decoded protobuf in debug form
-- inconsistencies are reported as warnings; the command still exits 0
-
-### M6 - `chunks`
-
-The mini-block chunk table as its own output, for comparing against the format
-spec.
-
-Done when:
-
-- works for mini-block pages and rejects other layouts with a clear message
-- prints metadata entry width, chunk count, item/value totals, and per-chunk
-  offset/bytes/values/log2/levels/rep/def/header/value-buffer sizes
-- prints repetition-index words with their meaning (`rows ending`, `leftover items`)
-
-### M7 - `check`
-
-Validation over everything above.
-
-Done when:
-
-- checks magic/version, region order, CMO/GBO sizes, metadata bounds, global
-  buffer bounds, page-buffer 64-byte alignment and bounds
-- decodes every page layout and every mini-block chunk table; reports warnings
-- exits non-zero when any check fails (unlike the informational commands)
-- `--format json` lists each check with `ok` / `warn` / `error`
-
----
-
-## Command reference
+- `text` (default): aligned UTF-8 tables for terminal viewing
+- `json`: pretty-printed JSON, one document per invocation
 
 ### `ldp info <FILE>`
 
-File-level summary. Never reads page bytes.
+File-level summary: format version, file regions, global buffers, and one row per
+column. Never reads page bytes.
+
+```bash
+ldp info data/xxxx.lance
+ldp info data/xxxx.lance --format json
+```
 
 ```text
               path: data/xxxx.lance
@@ -208,10 +80,21 @@ File-level summary. Never reads page bytes.
 
 regions
 name             start    end      size
-...
+---------------  -----  -----  --------
+data                 0  54304  53.0 KiB
+column metadata  54304  54557     253 B
+CMO table        54557  54589      32 B
+GBO table        54589  54605      16 B
+footer           54605  54645      40 B
 ```
 
 ### `ldp schema <FILE>`
+
+The schema embedded in global buffer 0, rendered as a tree.
+
+```bash
+ldp schema data/xxxx.lance
+```
 
 ```text
 fields: 3
@@ -223,6 +106,13 @@ fields: 3
 
 ### `ldp columns <FILE> [--column N]`
 
+One row per column.
+
+```bash
+ldp columns data/xxxx.lance
+ldp columns data/xxxx.lance --column 1
+```
+
 ```text
 column  pages   rows  col bufs     bytes  encoding    layouts
 ------  -----  -----  --------  --------  ----------  ----------
@@ -230,7 +120,18 @@ column  pages   rows  col bufs     bytes  encoding    layouts
      1      1  66049         0  52.7 KiB  none        mini-block
 ```
 
+| Option | Description |
+|---|---|
+| `--column N` | Restrict output to column `N` |
+
 ### `ldp pages <FILE> [--column N]`
+
+One row per page: position, size, row count, priority, buffer count, and layout.
+
+```bash
+ldp pages data/xxxx.lance
+ldp pages data/xxxx.lance --column 1
+```
 
 ```text
 column  page  position     bytes   rows  priority  bufs  layout
@@ -238,17 +139,32 @@ column  page  position     bytes   rows  priority  bufs  layout
      1     0        64  52.7 KiB  66049         0     3  mini-block (u32 chunk meta, 1 value buffer(s))
 ```
 
-### `ldp page <FILE> --column N --page K [--hex] [--hex-limit BYTES] [--raw]`
+### `ldp page <FILE> --column N --page K`
 
-Shows one page end to end: layout parameters, page buffers and their roles, the
+Full anatomy of one page: layout parameters, page buffers and their roles, the
 mini-block chunk table, and the repetition index.
 
 ```bash
 ldp page data/xxxx.lance --column 1 --page 0
 ldp page data/xxxx.lance --column 1 --page 0 --hex --hex-limit 256
+ldp page data/xxxx.lance --column 1 --page 0 --raw
 ```
 
+| Option | Description |
+|---|---|
+| `--column N` | Column index (required) |
+| `--page K` | Page index within the column (required) |
+| `--hex` | Include a hex dump of each page buffer |
+| `--hex-limit BYTES` | Maximum bytes dumped per buffer (default: 1024) |
+| `--raw` | Print the decoded protobuf layout in debug form |
+
 ### `ldp chunks <FILE> --column N --page K`
+
+The mini-block chunk table of one page, for comparing against the format spec.
+
+```bash
+ldp chunks data/xxxx.lance --column 1 --page 0
+```
 
 ```text
 chunk  offset  bytes  values  log2  levels  rep    def  header  value bufs  rows ending  leftover
@@ -256,13 +172,28 @@ chunk  offset  bytes  values  log2  levels  rep    def  header  value bufs  rows
     0       0   1760    1024    10    1024  200    256      16       1284           32         0
 ```
 
-### `ldp hexdump <FILE> --offset O --length L [--width BYTES]`
+### `ldp hexdump <FILE>`
+
+Hex dump an arbitrary byte range.
 
 ```bash
 ldp hexdump data/xxxx.lance --offset 0 --length 256 --width 16
 ```
 
+| Option | Description |
+|---|---|
+| `--offset BYTES` | Start offset (required) |
+| `--length BYTES` | Number of bytes to dump (required) |
+| `--width BYTES` | Bytes per line (default: 16) |
+
 ### `ldp check <FILE>`
+
+Validate the container and decode every page layout and mini-block chunk table.
+
+```bash
+ldp check data/xxxx.lance
+ldp check data/xxxx.lance --format json
+```
 
 ```text
 [ ok ] footer magic: file ends with "LANC"
@@ -273,34 +204,26 @@ ldp hexdump data/xxxx.lance --offset 0 --length 256 --width 16
 11 check(s): 0 error(s), 0 warning(s)
 ```
 
----
+Exit codes:
 
-## Output
-
-- `--format text` (default): UTF-8 tables, aligned for terminal viewing.
-- `--format json`: pretty-printed, one document per invocation; field names are
-  part of the CLI contract and should stay stable.
-- Informational commands (`info`, `schema`, `columns`, `pages`, `page`, `chunks`)
-  exit `0` even when they report warnings. `check` exits non-zero on errors.
-- All offsets and sizes are decimal bytes in text and JSON; hex dumps use
-  lowercase hex with an ASCII gutter.
+- `0` - success. Informational commands (`info`, `schema`, `columns`, `pages`,
+  `page`, `chunks`) also exit `0` when they emit warnings.
+- non-zero - error. `check` exits non-zero when any check fails.
 
 ---
 
-## Non-goals (v1)
+## Limitations
 
-- writing, repairing, or rewriting files
-- reading dataset manifests (`_versions/*.manifest`), fragments, deletions, indexes
-- decoding Arrow values (`ldp rows`) - layout first, values later
-- legacy v1 file bodies (footer/regions only)
-- object storage (S3/GCS/Azure) and remote URIs
-- blob v2 sidecar resolution
+- Read-only. `ldp` never writes, repairs, or rewrites files.
+- Local filesystem only. Object storage and remote URIs are not supported.
+- No dataset manifest support, so columns are identified by index rather than by
+  field name, and deletions / row ids / indexes are not shown.
+- Legacy v1 file bodies are not decoded; `info` shows the footer and regions only.
+- Page layouts are described, not decoded into Arrow values.
+- Blob v2 payloads stored in sidecar files are not resolved.
 
-## Open questions
+---
 
-1. Dependency strategy: reuse the `lance-file` / `lance-encoding` crates, or parse
-   the container and protobufs independently? (The command surface is the same;
-   this affects correctness-vs-control.)
-2. Where to vendor the `.proto` files and how to handle `protoc` in CI.
-3. Whether `page` should default to the deep view or require `--deep`.
-4. Whether `columns`/`pages` should stay separate or collapse into `ldp list`.
+## License
+
+Apache-2.0
