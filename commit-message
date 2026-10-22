@@ -1,0 +1,1 @@
+feat: add a read-only ldp CLI that inspects Lance v2 data files and reports footer regions, column-metadata and global-buffer offset tables, per-column summaries, and the embedded schema with text and JSON output

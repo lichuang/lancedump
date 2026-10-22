@@ -58,6 +58,8 @@ All commands take exactly one file. `--format text|json` is global:
 
 - `text` (default): aligned UTF-8 tables for terminal viewing
 - `json`: pretty-printed JSON, one document per invocation
+- Text output is colorized automatically when stdout is a terminal. Set
+  `NO_COLOR` to disable it, or `CLICOLOR_FORCE=1` to force color through a pipe.
 
 ### `ldp info <FILE>`
 
@@ -70,22 +72,42 @@ ldp info data/xxxx.lance --format json
 ```
 
 ```text
-              path: data/xxxx.lance
-              size: 53.4 KiB
-            format: v2.2 (2.2)
-              rows: 66049
-           columns: 2
-    global buffers: 1
-            schema: 3 field(s), 0 metadata key(s)
+Summary
+              Path: data/xxxx.lance
+              Size: 53.4 KiB
+            Format: v2.2 (2.2)
+              Rows: 66049
+           Columns: 2
+    Global buffers: 1
+            Schema: 3 field(s)
 
-regions
-name             start    end      size
----------------  -----  -----  --------
-data                 0  54304  53.0 KiB
-column metadata  54304  54557     253 B
-CMO table        54557  54589      32 B
-GBO table        54589  54605      16 B
-footer           54605  54645      40 B
+Footer
+  layout                      v2
+  column_meta_start           54304
+  column_meta_offsets_start   54557
+  global_buff_offsets_start   54589
+  num_global_buffers          1
+  num_columns                 2
+
+Regions
+name                          start    end      size
+----------------------------  -----  -----  --------
+data                              0  54304  53.0 KiB
+column metadata               54304  54557     253 B
+column metadata offset table  54557  54589      32 B
+global buffer offset table    54589  54605      16 B
+footer                        54605  54645      40 B
+
+Column Metadata Offset Table
+column  position  meta size  pages   rows  buffers  buf bytes
+------  --------  ---------  -----  -----  -------  ---------
+     0     54304       99 B      1  66049        1       30 B
+     1     54403      154 B      1  66049        3   52.7 KiB
+
+Global Buffer Offset Table
+index  position  size  description
+-----  --------  ----  -------------------------------------------------
+    0     54208  96 B  schema (FileDescriptor: 3 field(s), 66049 row(s))
 ```
 
 ### `ldp schema <FILE>`
@@ -97,11 +119,13 @@ ldp schema data/xxxx.lance
 ```
 
 ```text
-fields: 3
+Fields: 3
 
-#0   mime                         string               nullable
-#1   captions                     list                 nullable
-  #2   item                         uint32               nullable
+id  field     type    nullable  path
+--  --------  ------  --------  -------------
+ 0  mime      string  yes       mime
+ 1  captions  list    yes       captions
+ 2  └─ item   uint32  yes       captions.item
 ```
 
 ### `ldp columns <FILE> [--column N]`
@@ -218,7 +242,7 @@ Exit codes:
 - Local filesystem only. Object storage and remote URIs are not supported.
 - No dataset manifest support, so columns are identified by index rather than by
   field name, and deletions / row ids / indexes are not shown.
-- Legacy v1 file bodies are not decoded; `info` shows the footer and regions only.
+- Legacy v1 files are rejected. Only v2.0-v2.3 are supported.
 - Page layouts are described, not decoded into Arrow values.
 - Blob v2 payloads stored in sidecar files are not resolved.
 

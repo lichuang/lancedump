@@ -13,8 +13,8 @@
 | 阶段 | 内容 | 依赖 | 状态 |
 |---|---|---|---|
 | M0 | `ldp hexdump`：字节区间读取与十六进制渲染 | 无 | 未完成 |
-| M1 | `ldp info`：footer、GBO/CMO、schema/列元数据装载 | M0 | 未完成 |
-| M2 | `ldp schema`：schema 树渲染 | M1 | 未完成 |
+| M1 | `ldp info`：footer、GBO/CMO、schema/列元数据装载 | M0 | 已完成 |
+| M2 | `ldp schema`：schema 树渲染 | M1 | 已完成 |
 | M3 | `ldp columns`：列摘要 | M1 | 未完成 |
 | M4 | `ldp pages`：`PageLayout` 解码 | M3 | 未完成 |
 | M5 | `ldp page`：页字节、chunk 表、rep index | M4 | 未完成 |
@@ -41,6 +41,8 @@ M1 info                       容器层
 
 **状态：未完成**
 
+> `FileSource::read_at` 已在 M1 中实现；`hexdump` 命令本身尚未实现。
+
 目标：建立最小 I/O 原语和十六进制渲染，后续所有命令都复用它。
 
 范围：
@@ -59,7 +61,11 @@ M1 info                       容器层
 
 ## M1 - `ldp info`
 
-**状态：未完成**
+**状态：已完成**
+
+完成于：footer 解析（v1 16B 仅用于识别并拒绝 / v2 40B）、GBO/CMO、
+`FileDescriptor`、`ColumnMetadata` 装载，以及 text / json 输出。测试覆盖
+v1（拒绝）/ v2.0 / v2.1 / v2.2 样本，并断言装载过程不读取任何 page buffer。
 
 目标：定义“成功打开一个 Lance 文件”的标准。只解析容器层，不读任何页字节。
 
@@ -70,13 +76,13 @@ M1 info                       容器层
 - 解码 `GBO[0]` 为 `FileDescriptor`（schema + 行数）
 - 解码每一列的 `ColumnMetadata`（页数、页 buffer 区间、列 buffer）
 - 输出：路径、大小、版本、行数、区域表、global buffer 表、列摘要
-- legacy v1：只输出 footer/区域，并明确标记“未解码”
+- legacy v1：直接报 `unsupported` 错误，不尝试解析
 
 验收：
 
 - 在 v2.1、v2.2 的真实文件上输出正确
 - footer 损坏 / magic 错误时返回可读错误
-- v1 文件不崩溃，给出明确提示
+- v1 文件返回 `unsupported` 错误（退出码非 0）
 - 不读取任何 page buffer（用 I/O 计数或代码审查确认）
 - `--format json` 字段稳定
 
@@ -84,7 +90,15 @@ M1 info                       容器层
 
 ## M2 - `ldp schema`
 
-**状态：未完成**
+**状态：已完成**
+
+完成于：按 `parent_id` 建树，输出 field id、名称、逻辑类型、nullable、字段
+metadata、schema metadata，text / json 两种格式。测试覆盖嵌套 list、字段
+metadata、孤儿节点与循环 parent 链。
+
+> 说明：proto 里的 `Field.type`（PARENT/REPEATED/LEAF）在 v2 写入端恒为 0
+> （`FieldsWithMeta` 转换时固定 `r#type: 0`），读端也忽略它。因此 schema 输出
+> 不展示这个字段，层级关系由 `parent_id` 与 `logical_type` 表达。
 
 目标：渲染 M1 已装载的 schema。
 
