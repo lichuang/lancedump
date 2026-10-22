@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 pub mod info;
+pub mod pages;
 pub mod schema;
 
 use std::collections::{BTreeMap, HashMap};

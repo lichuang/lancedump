@@ -82,7 +82,7 @@ impl Report for SchemaReport {
       for node in &self.tree {
         push_node(&mut table, node, "", "");
       }
-      out.push_str(&table.render());
+      out.push_str(&table.render(style));
     }
 
     let mut field_metadata = Vec::new();

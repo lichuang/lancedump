@@ -150,7 +150,17 @@ column  pages   rows  col bufs     bytes  encoding    layouts
 
 ### `ldp pages <FILE> [--column N]`
 
-One row per page: position, size, row count, priority, buffer count, and layout.
+One row per page: buffer range, size, row count, priority, buffer count, and layout.
+`#` is the page's sequential position in the file's physical order (rows are
+sorted by `start`), and stays stable when `--column` is used.
+`page (in column)` is the page index within its column (the value `show --page`
+expects), so different columns both start at page 0. `start`/`end` are the
+smallest buffer offset and one past the largest buffer end; `end` is exclusive
+and excludes 64-byte alignment padding.
+
+Layout kinds are colorized when stdout is a terminal: mini-block (green),
+full-zip (yellow), sparse (magenta), constant (blue), blob (cyan), legacy
+v2.0 (dim).
 
 ```bash
 ldp pages data/xxxx.lance
@@ -158,20 +168,20 @@ ldp pages data/xxxx.lance --column 1
 ```
 
 ```text
-column  page  position     bytes   rows  priority  bufs  layout
-------  ----  --------  --------  -----  --------  ----  -----------------------------
+column  page (in column)  position     bytes   rows  priority  bufs  layout
+------  ---------------  --------  --------  -----  --------  ----  -----------------------------
      1     0        64  52.7 KiB  66049         0     3  mini-block (u32 chunk meta, 1 value buffer(s))
 ```
 
-### `ldp page <FILE> --column N --page K`
+### `ldp show <FILE> --column N --page K`
 
 Full anatomy of one page: layout parameters, page buffers and their roles, the
 mini-block chunk table, and the repetition index.
 
 ```bash
-ldp page data/xxxx.lance --column 1 --page 0
-ldp page data/xxxx.lance --column 1 --page 0 --hex --hex-limit 256
-ldp page data/xxxx.lance --column 1 --page 0 --raw
+ldp show data/xxxx.lance --column 1 --page 0
+ldp show data/xxxx.lance --column 1 --page 0 --hex --hex-limit 256
+ldp show data/xxxx.lance --column 1 --page 0 --raw
 ```
 
 | Option | Description |
@@ -231,7 +241,7 @@ ldp check data/xxxx.lance --format json
 Exit codes:
 
 - `0` - success. Informational commands (`info`, `schema`, `columns`, `pages`,
-  `page`, `chunks`) also exit `0` when they emit warnings.
+  `show`, `chunks`) also exit `0` when they emit warnings.
 - non-zero - error. `check` exits non-zero when any check fails.
 
 ---

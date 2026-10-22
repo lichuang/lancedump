@@ -15,7 +15,12 @@ fn main() -> Result<()> {
   let mut config = prost_build::Config::new();
   config.protoc_arg("--experimental_allow_proto3_optional");
   config.compile_protos(
-    &["./protos/file.proto", "./protos/file2.proto"],
+    &[
+      "./protos/file.proto",
+      "./protos/file2.proto",
+      "./protos/encodings_v2_0.proto",
+      "./protos/encodings_v2_1.proto",
+    ],
     &["./protos"],
   )?;
 

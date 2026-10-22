@@ -5,10 +5,36 @@
 
 use std::fmt::Write;
 
+/// A color used for a table cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Color {
+  Green,
+  Yellow,
+  Blue,
+  Magenta,
+  Cyan,
+  Red,
+  Dim,
+}
+
+impl Color {
+  fn code(self) -> &'static str {
+    match self {
+      Self::Green => "32",
+      Self::Yellow => "33",
+      Self::Blue => "34",
+      Self::Magenta => "35",
+      Self::Cyan => "36",
+      Self::Red => "31",
+      Self::Dim => "2",
+    }
+  }
+}
+
 /// ANSI styling for the text renderer.
 ///
-/// Colors are only emitted when the target is a terminal (or `--color always`),
-/// so piped output and tests stay plain.
+/// Colors are only emitted when the target is a terminal (or
+/// `CLICOLOR_FORCE` is set), so piped output and tests stay plain.
 #[derive(Debug, Clone, Copy)]
 pub struct Style {
   color: bool,
@@ -34,12 +60,35 @@ impl Style {
       text.to_string()
     }
   }
+
+  pub fn paint(&self, text: &str, color: Color) -> String {
+    if self.color {
+      format!("\x1b[{}m{text}\x1b[0m", color.code())
+    } else {
+      text.to_string()
+    }
+  }
+}
+
+/// A color for a page layout kind.
+pub fn layout_color(kind: &str) -> Option<Color> {
+  match kind {
+    "mini-block" => Some(Color::Green),
+    "full-zip" => Some(Color::Yellow),
+    "sparse" => Some(Color::Magenta),
+    "constant" => Some(Color::Blue),
+    "blob" => Some(Color::Cyan),
+    "legacy-v2.0" => Some(Color::Dim),
+    "undecodable" => Some(Color::Red),
+    _ => None,
+  }
 }
 
 /// A simple aligned table.
 pub struct Table {
   headers: Vec<String>,
   rows: Vec<Vec<String>>,
+  cell_colors: Vec<Vec<Option<Color>>>,
   right_align: Vec<bool>,
 }
 
@@ -48,6 +97,7 @@ impl Table {
     Self {
       headers: headers.iter().map(|header| header.to_string()).collect(),
       rows: Vec::new(),
+      cell_colors: Vec::new(),
       right_align: vec![false; headers.len()],
     }
   }
@@ -63,11 +113,23 @@ impl Table {
   }
 
   pub fn push(&mut self, row: Vec<String>) {
-    debug_assert_eq!(row.len(), self.headers.len());
-    self.rows.push(row);
+    self.push_colored(row, &[]);
   }
 
-  pub fn render(&self) -> String {
+  /// Push a row, coloring the given `(column, color)` cells.
+  pub fn push_colored(&mut self, row: Vec<String>, colored: &[(usize, Color)]) {
+    debug_assert_eq!(row.len(), self.headers.len());
+    let mut colors = vec![None; row.len()];
+    for &(column, color) in colored {
+      if let Some(slot) = colors.get_mut(column) {
+        *slot = Some(color);
+      }
+    }
+    self.rows.push(row);
+    self.cell_colors.push(colors);
+  }
+
+  pub fn render(&self, style: Style) -> String {
     let mut widths: Vec<usize> = self
       .headers
       .iter()
@@ -80,33 +142,63 @@ impl Table {
     }
 
     let mut out = String::new();
-    write_row(&mut out, &self.headers, &widths, &self.right_align);
+    write_row(
+      &mut out,
+      &self.headers,
+      &widths,
+      &self.right_align,
+      &[],
+      style,
+    );
     let separator: Vec<String> = widths.iter().map(|width| "-".repeat(*width)).collect();
-    write_row(&mut out, &separator, &widths, &self.right_align);
-    for row in &self.rows {
-      write_row(&mut out, row, &widths, &self.right_align);
+    write_row(&mut out, &separator, &widths, &self.right_align, &[], style);
+    for (row, colors) in self.rows.iter().zip(&self.cell_colors) {
+      write_row(&mut out, row, &widths, &self.right_align, colors, style);
     }
     out
   }
 }
 
-fn write_row(out: &mut String, cells: &[String], widths: &[usize], right: &[bool]) {
+fn write_row(
+  out: &mut String,
+  cells: &[String],
+  widths: &[usize],
+  right: &[bool],
+  colors: &[Option<Color>],
+  style: Style,
+) {
   for (index, cell) in cells.iter().enumerate() {
     if index > 0 {
       out.push_str("  ");
     }
     let padding = widths[index].saturating_sub(cell.chars().count());
     let last = index + 1 == cells.len();
-    if right[index] {
-      let _ = write!(out, "{}{}", " ".repeat(padding), cell);
+    let rendered = if right[index] {
+      format!("{}{}", " ".repeat(padding), cell)
     } else if last {
       // Do not pad the final column: avoids trailing whitespace.
-      out.push_str(cell);
+      cell.clone()
     } else {
-      let _ = write!(out, "{}{}", cell, " ".repeat(padding));
+      format!("{}{}", cell, " ".repeat(padding))
+    };
+    match colors.get(index).copied().flatten() {
+      Some(color) => out.push_str(&style.paint(&rendered, color)),
+      None => out.push_str(&rendered),
     }
   }
   out.push('\n');
+}
+
+/// Render a `Warnings` section, if there are any warnings.
+pub fn render_warnings(out: &mut String, style: Style, warnings: &[String]) {
+  if warnings.is_empty() {
+    return;
+  }
+  out.push('\n');
+  let _ = writeln!(out, "{}", style.heading("Warnings"));
+  for warning in warnings {
+    let _ = writeln!(out, "{}", style.warning(&format!("  - {warning}")));
+  }
 }
 
 /// Human-readable byte count.
@@ -144,8 +236,30 @@ mod tests {
     table = table.right_align(&[1]);
     table.push(vec!["x".to_string(), "1".to_string()]);
     table.push(vec!["long".to_string(), "22".to_string()]);
-    let rendered = table.render();
+    let rendered = table.render(Style::new(false));
     assert!(rendered.contains("a     bb"));
     assert!(rendered.contains("long  22"));
+  }
+
+  #[test]
+  fn maps_layout_colors() {
+    assert_eq!(layout_color("mini-block"), Some(Color::Green));
+    assert_eq!(layout_color("full-zip"), Some(Color::Yellow));
+    assert_eq!(layout_color("sparse"), Some(Color::Magenta));
+    assert_eq!(layout_color("constant"), Some(Color::Blue));
+    assert_eq!(layout_color("blob"), Some(Color::Cyan));
+    assert_eq!(layout_color("legacy-v2.0"), Some(Color::Dim));
+    assert_eq!(layout_color("unknown"), None);
+  }
+
+  #[test]
+  fn colors_table_cells() {
+    let mut table = Table::new(&["layout"]);
+    table.push_colored(vec!["mini-block".to_string()], &[(0, Color::Green)]);
+    let colored = table.render(Style::new(true));
+    assert!(colored.contains("\x1b[32mmini-block\x1b[0m"));
+
+    let plain = table.render(Style::new(false));
+    assert!(!plain.contains("\x1b["));
   }
 }

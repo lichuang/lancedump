@@ -15,9 +15,9 @@
 | M0 | `ldp hexdump`：字节区间读取与十六进制渲染 | 无 | 未完成 |
 | M1 | `ldp info`：footer、GBO/CMO、schema/列元数据装载 | M0 | 已完成 |
 | M2 | `ldp schema`：schema 树渲染 | M1 | 已完成 |
-| M3 | `ldp columns`：列摘要 | M1 | 未完成 |
-| M4 | `ldp pages`：`PageLayout` 解码 | M3 | 未完成 |
-| M5 | `ldp page`：页字节、chunk 表、rep index | M4 | 未完成 |
+| M3 | `ldp columns`：列摘要（暂缓，`info` 的 CMO 表已覆盖） | M1 | 未完成 |
+| M4 | `ldp pages`：`PageLayout` 解码 | M1 | 已完成 |
+| M5 | `ldp show`：页字节、chunk 表、rep index | M4 | 未完成 |
 | M6 | `ldp chunks`：mini-block chunk 表 | M5 | 未完成 |
 | M7 | `ldp check`：结构校验 | M1–M6 | 未完成 |
 
@@ -28,11 +28,11 @@ M0 hexdump                    （独立原语）
 
 M1 info                       容器层
  ├── M2 schema                GBO[0] 视图
- ├── M3 columns               CMO 视图
- │    └── M4 pages             + 解码 PageLayout（只读元数据）
- │         └── M5 page        + 读页字节、chunk 表、rep index
- │              └── M6 chunks mini-block 子集
- └── M7 check                 以上全部 + 边界校验
+ ├── M3 columns               CMO 视图（暂缓）
+ └── M4 pages                 + 解码 PageLayout（只读元数据）
+      └── M5 show            + 读页字节、chunk 表、rep index
+           └── M6 chunks     mini-block 子集
+M7 check                      以上全部 + 边界校验
 ```
 
 ---
@@ -139,7 +139,12 @@ metadata、孤儿节点与循环 parent 链。
 
 ## M4 - `ldp pages`
 
-**状态：未完成**
+**状态：已完成**
+
+完成于：`Any` → `PageLayout` / legacy `ArrayEncoding` 解码，页级表格输出
+（column / page / position / bytes / rows / priority / buffers / layout），
+`--column N` 过滤，text / json 两种格式。测试覆盖 v2.0（legacy）、v2.1
+（mini-block u16）、v2.2（constant + mini-block u32）。
 
 目标：第一次解码 `Page.encoding`（`Any` → `PageLayout`）。
 
@@ -153,12 +158,12 @@ metadata、孤儿节点与循环 parent 链。
 验收：
 
 - 未知/无法解码的编码变成 warning，不中断
-- 布局摘要与 `page` 命令一致
+- 布局摘要与 `show` 命令一致
 - 仍不读取页 buffer
 
 ---
 
-## M5 - `ldp page`
+## M5 - `ldp show`
 
 **状态：未完成**
 
@@ -201,7 +206,7 @@ metadata、孤儿节点与循环 parent 链。
 
 验收：
 
-- 输出与 `page` 内嵌的 chunk 表完全一致
+- 输出与 `show` 内嵌的 chunk 表完全一致
 - 非 mini-block 页返回非 0 退出码
 
 ---
@@ -236,5 +241,5 @@ metadata、孤儿节点与循环 parent 链。
 
 1. **依赖策略**：复用 `lance-file` / `lance-encoding`，还是独立解析容器与 protobuf。
 2. **proto 组织**：vendor 哪些 `.proto`，CI 里如何处理 `protoc`。
-3. **`page` 默认深度**：默认完整解剖，还是需要 `--deep` 才展开 chunk 表。
+3. **`show` 默认深度**：默认完整解剖，还是需要 `--deep` 才展开 chunk 表。
 4. **`columns` / `pages`**：保持两个命令，还是合并成 `ldp list`。

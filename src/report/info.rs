@@ -9,7 +9,7 @@ use crate::format::container::FileMeta;
 use crate::format::footer::FooterLayout;
 use crate::proto::pb;
 use crate::report::Report;
-use crate::view::{Style, Table, format_bytes};
+use crate::view::{Style, Table, format_bytes, render_warnings};
 
 #[derive(Debug, Serialize)]
 pub struct FormatReport {
@@ -254,7 +254,7 @@ impl Report for InfoReport {
           format_bytes(region.size),
         ]);
       }
-      out.push_str(&table.render());
+      out.push_str(&table.render(style));
     }
 
     if !self.cmo.is_empty() {
@@ -293,7 +293,7 @@ impl Report for InfoReport {
           ]);
         }
       }
-      out.push_str(&table.render());
+      out.push_str(&table.render(style));
     }
 
     if !self.global_buffers.is_empty() {
@@ -309,16 +309,10 @@ impl Report for InfoReport {
           buffer.description.clone(),
         ]);
       }
-      out.push_str(&table.render());
+      out.push_str(&table.render(style));
     }
 
-    if !self.warnings.is_empty() {
-      out.push('\n');
-      let _ = writeln!(out, "{}", style.heading("Warnings"));
-      for warning in &self.warnings {
-        let _ = writeln!(out, "{}", style.warning(&format!("  - {warning}")));
-      }
-    }
+    render_warnings(&mut out, style, &self.warnings);
 
     out
   }

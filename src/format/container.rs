@@ -29,9 +29,50 @@ impl BufferRange {
   }
 }
 
-/// Page-level metadata used by `info` now, and by `pages` / `page` later.
+/// Decoded outer form of a page/column encoding.
+///
+/// `Page.encoding` / `ColumnMetadata.encoding` are `Encoding` messages whose
+/// `direct.encoding` field holds a serialized `google.protobuf.Any`. We decode
+/// the Any here (to get the type URL and payload) but leave the layout itself
+/// to `format::layout`.
+#[derive(Debug, Clone)]
+pub enum PageEncoding {
+  Direct {
+    type_url: String,
+    value: Vec<u8>,
+  },
+  /// Not emitted by current writers; kept for completeness and for `show`.
+  #[allow(dead_code)]
+  Deferred {
+    position: u64,
+    length: u64,
+  },
+  None,
+}
+
+impl PageEncoding {
+  pub fn kind(&self) -> &'static str {
+    match self {
+      Self::Direct { type_url, .. } => match crate::proto::any_type_name(type_url) {
+        "PageLayout" => "structural",
+        "ArrayEncoding" => "legacy-v2.0",
+        _ => "unknown",
+      },
+      Self::Deferred { .. } => "deferred",
+      Self::None => "none",
+    }
+  }
+
+  pub fn type_url(&self) -> Option<&str> {
+    match self {
+      Self::Direct { type_url, .. } => Some(type_url),
+      _ => None,
+    }
+  }
+}
+
+/// Page-level metadata.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct PageMeta {
   pub index: u32,
   pub buffers: Vec<BufferRange>,
@@ -39,9 +80,34 @@ pub struct PageMeta {
   pub num_rows: u64,
   /// `Page.priority`: the row number of the first row in the page.
   pub priority: u64,
-  /// Raw page encoding. Decoded by later phases (`pages` / `page`).
-  #[allow(dead_code)]
-  pub encoding: Option<pb2::Encoding>,
+  pub encoding: PageEncoding,
+}
+
+impl PageMeta {
+  /// Smallest buffer offset (the page's approximate start in the file).
+  pub fn start(&self) -> u64 {
+    self
+      .buffers
+      .iter()
+      .map(|buffer| buffer.position)
+      .min()
+      .unwrap_or_default()
+  }
+
+  /// One past the last byte of the page's highest buffer (exclusive).
+  pub fn end(&self) -> u64 {
+    self
+      .buffers
+      .iter()
+      .map(|buffer| buffer.end())
+      .max()
+      .unwrap_or_default()
+  }
+
+  /// Sum of the page's buffer sizes, excluding alignment padding.
+  pub fn total_bytes(&self) -> u64 {
+    self.buffers.iter().map(|buffer| buffer.size).sum()
+  }
 }
 
 #[derive(Debug)]
@@ -238,6 +304,43 @@ impl FileMeta {
   pub fn num_global_buffers(&self) -> Option<u32> {
     self.footer.v2().map(|footer| footer.num_global_buffers)
   }
+
+  /// All columns, or just `column` when given.
+  pub fn selected_columns(&self, column: Option<u32>) -> Result<Vec<&ColumnMeta>> {
+    match column {
+      Some(index) => match self.columns.iter().find(|column| column.index == index) {
+        Some(column) => Ok(vec![column]),
+        None => bail!(
+          "column {index} does not exist (this file has {} column(s): 0..{})",
+          self.columns.len(),
+          self.columns.len().saturating_sub(1)
+        ),
+      },
+      None => Ok(self.columns.iter().collect()),
+    }
+  }
+}
+
+fn decode_encoding(encoding: Option<pb2::Encoding>) -> PageEncoding {
+  match encoding.and_then(|encoding| encoding.location) {
+    Some(pb2::encoding::Location::Direct(direct)) => {
+      match prost_types::Any::decode(direct.encoding.as_slice()) {
+        Ok(any) => PageEncoding::Direct {
+          type_url: any.type_url,
+          value: any.value,
+        },
+        Err(_) => PageEncoding::Direct {
+          type_url: "<invalid Any>".to_string(),
+          value: direct.encoding,
+        },
+      }
+    }
+    Some(pb2::encoding::Location::Indirect(deferred)) => PageEncoding::Deferred {
+      position: deferred.buffer_location,
+      length: deferred.buffer_length,
+    },
+    Some(pb2::encoding::Location::None(_)) | None => PageEncoding::None,
+  }
 }
 
 fn decode_column(
@@ -269,7 +372,7 @@ fn decode_column(
         buffers,
         num_rows: page.length,
         priority: page.priority,
-        encoding: page.encoding,
+        encoding: decode_encoding(page.encoding),
       }
     })
     .collect();

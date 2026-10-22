@@ -32,6 +32,17 @@ pub enum OutputFormat {
 }
 
 #[derive(Debug, Args)]
+pub struct ColumnArgs {
+  /// Path to a *.lance data file.
+  #[arg(value_name = "FILE")]
+  pub path: PathBuf,
+
+  /// Restrict output to this column index.
+  #[arg(long, value_name = "INDEX")]
+  pub column: Option<u32>,
+}
+
+#[derive(Debug, Args)]
 pub struct FileArgs {
   /// Path to a *.lance data file.
   #[arg(value_name = "FILE")]
@@ -45,4 +56,7 @@ pub enum Command {
 
   /// Show the schema embedded in global buffer 0.
   Schema(FileArgs),
+
+  /// List pages: position, size, rows, priority, buffers, and layout.
+  Pages(ColumnArgs),
 }
