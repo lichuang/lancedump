@@ -4,6 +4,7 @@
 pub mod info;
 pub mod pages;
 pub mod schema;
+pub mod show;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};

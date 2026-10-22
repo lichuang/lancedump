@@ -43,6 +43,29 @@ pub struct ColumnArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ShowArgs {
+  /// Path to a *.lance data file.
+  #[arg(value_name = "FILE")]
+  pub path: PathBuf,
+
+  /// Global page index (the `#` column from `ldp pages`).
+  #[arg(long, value_name = "INDEX")]
+  pub page: u32,
+
+  /// Include a hex dump of each page buffer.
+  #[arg(long)]
+  pub hex: bool,
+
+  /// Maximum bytes to hex dump per buffer.
+  #[arg(long, default_value_t = 1024, value_name = "BYTES")]
+  pub hex_limit: usize,
+
+  /// Print the decoded protobuf layout in raw debug form.
+  #[arg(long)]
+  pub raw: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct FileArgs {
   /// Path to a *.lance data file.
   #[arg(value_name = "FILE")]
@@ -59,4 +82,7 @@ pub enum Command {
 
   /// List pages: position, size, rows, priority, buffers, and layout.
   Pages(ColumnArgs),
+
+  /// Show one page in detail: layout, buffers, chunks, and repetition index.
+  Show(ShowArgs),
 }

@@ -189,6 +189,37 @@ fn write_row(
   out.push('\n');
 }
 
+/// Hex dump with an ASCII gutter.
+pub fn hexdump(bytes: &[u8], base_offset: u64, width: usize) -> String {
+  let width = width.clamp(1, 64);
+  let mut out = String::new();
+  for (line, chunk) in bytes.chunks(width).enumerate() {
+    let offset = base_offset + (line * width) as u64;
+    let _ = write!(out, "{offset:08x}  ");
+    for i in 0..width {
+      match chunk.get(i) {
+        Some(byte) => {
+          let _ = write!(out, "{byte:02x} ");
+        }
+        None => out.push_str("   "),
+      }
+      if i + 1 == width / 2 {
+        out.push(' ');
+      }
+    }
+    out.push_str(" |");
+    for byte in chunk {
+      out.push(if byte.is_ascii_graphic() || *byte == b' ' {
+        *byte as char
+      } else {
+        '.'
+      });
+    }
+    out.push_str("|\n");
+  }
+  out
+}
+
 /// Render a `Warnings` section, if there are any warnings.
 pub fn render_warnings(out: &mut String, style: Style, warnings: &[String]) {
   if warnings.is_empty() {

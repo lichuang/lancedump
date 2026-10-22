@@ -17,7 +17,7 @@
 | M2 | `ldp schema`：schema 树渲染 | M1 | 已完成 |
 | M3 | `ldp columns`：列摘要（暂缓，`info` 的 CMO 表已覆盖） | M1 | 未完成 |
 | M4 | `ldp pages`：`PageLayout` 解码 | M1 | 已完成 |
-| M5 | `ldp show`：页字节、chunk 表、rep index | M4 | 未完成 |
+| M5 | `ldp show`：页字节、chunk 表、rep index | M4 | 已完成 |
 | M6 | `ldp chunks`：mini-block chunk 表 | M5 | 未完成 |
 | M7 | `ldp check`：结构校验 | M1–M6 | 未完成 |
 
@@ -165,7 +165,13 @@ metadata、孤儿节点与循环 parent 链。
 
 ## M5 - `ldp show`
 
-**状态：未完成**
+**状态：已完成**
+
+完成于：页 buffer 读取与角色标注、完整 `PageLayout` 参数输出、mini-block
+chunk 表（2B/4B 元数据、chunk header、rep/def/value 区间、repetition index）、
+full-zip repetition index（自动推断 1/2/4/8 字节宽度）、`--hex` / `--hex-limit`
+/ `--raw`，text / json 两种格式。测试覆盖 v2.1 mini-block、v2.2 mini-block+repdef、
+v2.2 constant、v2.0 legacy，以及 hex/raw。
 
 目标：单页完整解剖。
 
@@ -173,6 +179,7 @@ metadata、孤儿节点与循环 parent 链。
 
 - 解码完整 `PageLayout`：压缩方式、rep/def layers、item 数、字典、rep index 深度
 - 页 buffer 及角色：chunk metadata / chunk data / dictionary / rep index / zipped values
+- 选择方式：`--page K`，K 是 `ldp pages` 输出的全局 `#`（物理顺序）
 - mini-block chunk 表：
   - 2 字节元数据（v2.1）/ 4 字节（v2.2+）
   - chunk offset/size、值数、chunk header、rep/def/value 区间

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::format::container::{ColumnMeta, FileMeta, PageMeta};
+use crate::format::container::FileMeta;
 use crate::format::layout;
 use crate::report::Report;
 use crate::view::{Style, Table, format_bytes, layout_color, render_warnings};
@@ -44,16 +44,9 @@ impl PagesReport {
       .map(|column| column.index)
       .collect();
 
-    // Sort by physical position so the listing follows the file layout, not
-    // the column order. The global index is assigned before filtering, so
+    // Physical order; the global index is assigned before filtering, so
     // `--column N` keeps each page's number stable.
-    let mut entries: Vec<(&ColumnMeta, &PageMeta)> = meta
-      .columns
-      .iter()
-      .flat_map(|column| column.pages.iter().map(move |page| (column, page)))
-      .collect();
-    entries.sort_by_key(|(column, page)| (page.start(), column.index, page.index));
-
+    let entries = meta.pages_in_physical_order();
     let mut pages = Vec::with_capacity(entries.len());
     for (global_index, (column, page)) in entries.into_iter().enumerate() {
       if !selected.contains(&column.index) {

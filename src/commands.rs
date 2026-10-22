@@ -9,6 +9,8 @@ use crate::report::emit;
 use crate::report::info::InfoReport;
 use crate::report::pages::PagesReport;
 use crate::report::schema::SchemaReport;
+use crate::report::show::{ShowOptions, ShowReport};
+use crate::source::FileSource;
 
 pub fn run(cli: Cli) -> Result<()> {
   match cli.command {
@@ -23,6 +25,17 @@ pub fn run(cli: Cli) -> Result<()> {
     Command::Pages(args) => {
       let meta = FileMeta::open(&args.path)?;
       emit(&PagesReport::from_meta(&meta, args.column)?, cli.format)
+    }
+    Command::Show(args) => {
+      let mut source = FileSource::open(&args.path)?;
+      let meta = FileMeta::open_from(&mut source)?;
+      let options = ShowOptions {
+        hex: args.hex,
+        hex_limit: args.hex_limit,
+        raw: args.raw,
+      };
+      let report = ShowReport::from_meta(&meta, args.page, &mut source, options)?;
+      emit(&report, cli.format)
     }
   }
 }

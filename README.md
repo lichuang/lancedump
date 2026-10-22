@@ -151,12 +151,12 @@ column  pages   rows  col bufs     bytes  encoding    layouts
 ### `ldp pages <FILE> [--column N]`
 
 One row per page: buffer range, size, row count, priority, buffer count, and layout.
-`#` is the page's sequential position in the file's physical order (rows are
-sorted by `start`), and stays stable when `--column` is used.
-`page (in column)` is the page index within its column (the value `show --page`
-expects), so different columns both start at page 0. `start`/`end` are the
-smallest buffer offset and one past the largest buffer end; `end` is exclusive
-and excludes 64-byte alignment padding.
+`#` is the global page index in physical file order (rows are sorted by
+`start`) and is the value `ldp show --page` expects; it stays stable when
+`--column` is used. `page (in column)` is the page index within its column, so
+different columns both start at page 0. `start`/`end` are the smallest buffer
+offset and one past the largest buffer end; `end` is exclusive and excludes
+64-byte alignment padding.
 
 Layout kinds are colorized when stdout is a terminal: mini-block (green),
 full-zip (yellow), sparse (magenta), constant (blue), blob (cyan), legacy
@@ -168,29 +168,67 @@ ldp pages data/xxxx.lance --column 1
 ```
 
 ```text
-column  page (in column)  position     bytes   rows  priority  bufs  layout
-------  ---------------  --------  --------  -----  --------  ----  -----------------------------
-     1     0        64  52.7 KiB  66049         0     3  mini-block (u32 chunk meta, 1 value buffer(s))
+#  column  page (in column)  start    end     bytes   rows  priority  buffers  layout
+-  ------  ----------------  -----  -----  --------  -----  --------  -------  ----------------------------------------------
+1       1                 0     64  54160  52.7 KiB  66049         0        3  mini-block (u32 chunk meta, 1 value buffer(s))
 ```
 
-### `ldp show <FILE> --column N --page K`
+### `ldp show <FILE> --page K`
 
-Full anatomy of one page: layout parameters, page buffers and their roles, the
-mini-block chunk table, and the repetition index.
+Full anatomy of one page, selected by the global `#` from `ldp pages`: layout
+parameters, page buffers and their roles, the mini-block chunk table, and the
+repetition index. The output also reports the page's `column` and per-column
+`page` for cross-referencing.
 
 ```bash
-ldp show data/xxxx.lance --column 1 --page 0
-ldp show data/xxxx.lance --column 1 --page 0 --hex --hex-limit 256
-ldp show data/xxxx.lance --column 1 --page 0 --raw
+ldp show data/xxxx.lance --page 1
+ldp show data/xxxx.lance --page 1 --hex --hex-limit 256
+ldp show data/xxxx.lance --page 1 --raw
 ```
 
 | Option | Description |
 |---|---|
-| `--column N` | Column index (required) |
-| `--page K` | Page index within the column (required) |
+| `--page K` | Global page index from `ldp pages` (required) |
 | `--hex` | Include a hex dump of each page buffer |
 | `--hex-limit BYTES` | Maximum bytes dumped per buffer (default: 1024) |
 | `--raw` | Print the decoded protobuf layout in debug form |
+
+```text
+Summary
+                   Index: 1
+                  Column: 1
+     Page index in column: 0
+                   Start: 64
+                     End: 54160
+                   Bytes: 52.7 KiB
+                    Rows: 66049
+                Priority: 0
+                Encoding: structural
+                Type URL: /lance.encodings21.PageLayout
+
+Layout: mini-block
+  chunk metadata width        u32 (4 bytes)
+  num_buffers                 1
+  num_items                   16416
+  rep_compression             rle
+  def_compression             bitpacking(out-of-line)
+  value_compression           bitpacking(inline)
+  repetition_index_depth      1
+  layers                      all-valid-item -> nullable+emptyable-list
+
+Page buffers
+buffer  role              start    end      size
+------  ----------------  -----  -----  --------
+     0  chunk metadata       64    132      68 B
+     1  chunk data          192  53848  52.4 KiB
+     2  repetition index  53888  54160     272 B
+
+Mini-block chunks (17 chunks, 16416 items, 1 value buffer(s))
+chunk  offset  start  bytes  values  levels  rep    def  header  value bufs  rep index
+-----  ------  -----  -----  ------  ------  ---  -----  ------  ----------  ---------
+    0       0    192   1760    1024    1024  200    256      16  1284        32,0
+...
+```
 
 ### `ldp chunks <FILE> --column N --page K`
 

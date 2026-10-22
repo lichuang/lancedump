@@ -305,6 +305,19 @@ impl FileMeta {
     self.footer.v2().map(|footer| footer.num_global_buffers)
   }
 
+  /// Every page in physical file order (sorted by `start`, then column/page).
+  ///
+  /// The position in this list is the global page index used by `show --page`.
+  pub fn pages_in_physical_order(&self) -> Vec<(&ColumnMeta, &PageMeta)> {
+    let mut entries: Vec<(&ColumnMeta, &PageMeta)> = self
+      .columns
+      .iter()
+      .flat_map(|column| column.pages.iter().map(move |page| (column, page)))
+      .collect();
+    entries.sort_by_key(|(column, page)| (page.start(), column.index, page.index));
+    entries
+  }
+
   /// All columns, or just `column` when given.
   pub fn selected_columns(&self, column: Option<u32>) -> Result<Vec<&ColumnMeta>> {
     match column {
