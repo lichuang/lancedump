@@ -52,7 +52,7 @@ impl PagesReport {
       if !selected.contains(&column.index) {
         continue;
       }
-      let (layout, detail) = match layout::decode(&page.encoding) {
+      let (layout, detail) = match layout::decode_layout(&page.encoding) {
         Ok(Some(decoded)) => {
           let summary = layout::summary(&decoded);
           (summary.kind.to_string(), summary.detail)

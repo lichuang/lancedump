@@ -30,7 +30,7 @@ pub struct LayoutDetail {
 }
 
 /// Decode the `Any` payload of a page encoding.
-pub fn decode(encoding: &PageEncoding) -> Result<Option<DecodedLayout>> {
+pub fn decode_layout(encoding: &PageEncoding) -> Result<Option<DecodedLayout>> {
   let PageEncoding::Direct { type_url, value } = encoding else {
     return Ok(None);
   };

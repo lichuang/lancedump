@@ -50,7 +50,7 @@ fn show_json_v2_1_miniblock() {
   assert_eq!(buffers[1]["role"], "chunk data");
   assert_eq!(buffers[1]["start"], 64);
 
-  let chunks = &report["chunks"];
+  let chunks = &report["internals"]["chunks"];
   assert_eq!(chunks["num_chunks"], 4);
   assert_eq!(chunks["num_items"], 256);
   assert_eq!(chunks["total_values"], 256);
@@ -59,7 +59,7 @@ fn show_json_v2_1_miniblock() {
   assert_eq!(chunks["chunks"][0]["bytes"], 4_104);
   assert_eq!(chunks["chunks"][0]["values"], 64);
   assert_eq!(chunks["chunks"][3]["values"], 64);
-  assert!(report["full_zip_rep_index"].is_null());
+  assert_eq!(report["internals"]["kind"], "mini-block");
   assert_eq!(report["warnings"].as_array().unwrap().len(), 0);
 }
 
@@ -72,7 +72,7 @@ fn show_json_v2_2_miniblock_with_repdef() {
   assert_eq!(buffers.len(), 3);
   assert_eq!(buffers[2]["role"], "repetition index");
 
-  let chunks = &report["chunks"];
+  let chunks = &report["internals"]["chunks"];
   assert_eq!(chunks["num_chunks"], 17);
   assert_eq!(chunks["num_items"], 16_416);
   assert_eq!(chunks["total_values"], 16_416);
@@ -91,7 +91,7 @@ fn show_json_v2_2_miniblock_with_repdef() {
 fn show_json_constant_page() {
   let report = run_json("v2_2.lance", 0, &[]);
   assert_eq!(report["layout"]["kind"], "constant");
-  assert!(report["chunks"].is_null());
+  assert!(report["internals"].is_null());
 
   let fields = report["layout"]["fields"].as_array().unwrap();
   assert!(fields.iter().any(|field| field["name"] == "inline_value"
@@ -102,7 +102,7 @@ fn show_json_constant_page() {
 fn show_json_legacy_page() {
   let report = run_json("v2_0.lance", 0, &[]);
   assert_eq!(report["layout"]["kind"], "legacy-v2.0");
-  assert!(report["chunks"].is_null());
+  assert!(report["internals"].is_null());
   assert_eq!(report["buffers"][0]["role"], "legacy array buffer");
 }
 

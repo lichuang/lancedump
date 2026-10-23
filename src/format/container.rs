@@ -69,6 +69,28 @@ impl PageEncoding {
       _ => None,
     }
   }
+
+  pub fn decode(encoding: Option<pb2::Encoding>) -> Self {
+    match encoding.and_then(|encoding| encoding.location) {
+      Some(pb2::encoding::Location::Direct(direct)) => {
+        match prost_types::Any::decode(direct.encoding.as_slice()) {
+          Ok(any) => PageEncoding::Direct {
+            type_url: any.type_url,
+            value: any.value,
+          },
+          Err(_) => PageEncoding::Direct {
+            type_url: "<invalid Any>".to_string(),
+            value: direct.encoding,
+          },
+        }
+      }
+      Some(pb2::encoding::Location::Indirect(deferred)) => Self::Deferred {
+        position: deferred.buffer_location,
+        length: deferred.buffer_length,
+      },
+      Some(pb2::encoding::Location::None(_)) | None => Self::None,
+    }
+  }
 }
 
 /// Page-level metadata.
@@ -148,6 +170,59 @@ impl ColumnMeta {
         .map(|buffer| buffer.size)
         .sum::<u64>()
   }
+
+  pub fn decode(index: u32, metadata: pb2::ColumnMetadata, warnings: &mut Vec<String>) -> Self {
+    let pages = metadata
+      .pages
+      .into_iter()
+      .enumerate()
+      .map(|(page_index, page)| {
+        if page.buffer_offsets.len() != page.buffer_sizes.len() {
+          warnings.push(format!(
+            "column {index} page {page_index}: {} buffer offset(s) but {} size(s)",
+            page.buffer_offsets.len(),
+            page.buffer_sizes.len()
+          ));
+        }
+        let buffers = page
+          .buffer_offsets
+          .iter()
+          .copied()
+          .zip(page.buffer_sizes.iter().copied())
+          .map(|(position, size)| BufferRange { position, size })
+          .collect();
+        PageMeta {
+          index: page_index as u32,
+          buffers,
+          num_rows: page.length,
+          priority: page.priority,
+          encoding: PageEncoding::decode(page.encoding),
+        }
+      })
+      .collect();
+
+    if metadata.buffer_offsets.len() != metadata.buffer_sizes.len() {
+      warnings.push(format!(
+        "column {index}: {} column buffer offset(s) but {} size(s)",
+        metadata.buffer_offsets.len(),
+        metadata.buffer_sizes.len()
+      ));
+    }
+    let column_buffers = metadata
+      .buffer_offsets
+      .iter()
+      .copied()
+      .zip(metadata.buffer_sizes.iter().copied())
+      .map(|(position, size)| BufferRange { position, size })
+      .collect();
+
+    ColumnMeta {
+      index,
+      pages,
+      column_buffers,
+      undecodable: false,
+    }
+  }
 }
 
 #[derive(Debug)]
@@ -175,19 +250,8 @@ impl FileMeta {
     let file_size = source.len();
     let path = source.path().to_path_buf();
 
-    if file_size < FOOTER_LEN_V1 {
-      bail!(
-        "file is too small to be a Lance file: {file_size} bytes \
-                 (the smallest footer is {FOOTER_LEN_V1} bytes)"
-      );
-    }
-
-    let tail_len = file_size.min(FOOTER_LEN_V2) as usize;
-    let tail = source.read_at(file_size - tail_len as u64, tail_len)?;
-    let footer = Footer::parse(&tail)?;
+    let footer = decode_footer(source, file_size)?;
     let version = footer.version();
-    let mut warnings = Vec::new();
-
     if !version.is_v2() {
       bail!(
         "unsupported Lance file format {version} (major {}, minor {}): \
@@ -200,75 +264,19 @@ impl FileMeta {
     let v2 = *footer
       .v2()
       .expect("a v2 version always has a v2 footer layout");
-
+    let mut warnings = Vec::new();
     validate_regions(&v2, file_size, &mut warnings);
 
-    let global_buffers = read_offset_table(
+    let global_buffers = decode_global_buffers(source, &v2)?;
+    let column_metadata_table = decode_column_offset_table(source, &v2)?;
+    let (schema, num_rows) = decode_schema(source, file_size, &global_buffers)?;
+    let columns = decode_columns(
       source,
-      v2.global_buff_offsets_start,
-      v2.num_global_buffers,
-      "GBO",
-    )?;
-    let column_metadata_table =
-      read_offset_table(source, v2.column_meta_offsets_start, v2.num_columns, "CMO")?;
-
-    if global_buffers.is_empty() {
-      bail!("file contains no global buffers; global buffer 0 is expected to hold the file schema");
-    }
-
-    let schema_buffer = global_buffers[0];
-    if schema_buffer.end() > file_size {
-      bail!(
-        "global buffer 0 (schema) is out of bounds: {}..{} (file size {file_size})",
-        schema_buffer.position,
-        schema_buffer.end()
-      );
-    }
-    let schema_bytes = source.read_at(schema_buffer.position, schema_buffer.size as usize)?;
-    let descriptor = pb::FileDescriptor::decode(schema_bytes.as_slice())
-      .context("failed to decode global buffer 0 as FileDescriptor")?;
-    let schema = descriptor.schema;
-    let num_rows = Some(descriptor.length);
-
-    let mut columns = Vec::with_capacity(column_metadata_table.len());
-    for (index, entry) in column_metadata_table.iter().enumerate() {
-      let index = index as u32;
-      if entry.position < v2.column_meta_start || entry.end() > v2.column_meta_offsets_start {
-        warnings.push(format!(
-          "column {index}: metadata range {}..{} is outside the column metadata region {}..{}",
-          entry.position,
-          entry.end(),
-          v2.column_meta_start,
-          v2.column_meta_offsets_start
-        ));
-      }
-      if entry.end() > file_size {
-        warnings.push(format!(
-          "column {index}: metadata range {}..{} is out of bounds (file size {file_size})",
-          entry.position,
-          entry.end()
-        ));
-        columns.push(ColumnMeta::undecodable(index));
-        continue;
-      }
-      match source.read_at(entry.position, entry.size as usize) {
-        Ok(bytes) => match pb2::ColumnMetadata::decode(bytes.as_slice()) {
-          Ok(metadata) => {
-            columns.push(decode_column(index, metadata, &mut warnings));
-          }
-          Err(error) => {
-            warnings.push(format!(
-              "column {index}: failed to decode ColumnMetadata: {error}"
-            ));
-            columns.push(ColumnMeta::undecodable(index));
-          }
-        },
-        Err(error) => {
-          warnings.push(format!("column {index}: {error:#}"));
-          columns.push(ColumnMeta::undecodable(index));
-        }
-      }
-    }
+      file_size,
+      &v2,
+      &column_metadata_table,
+      &mut warnings,
+    );
 
     Ok(Self {
       path,
@@ -334,82 +342,121 @@ impl FileMeta {
   }
 }
 
-fn decode_encoding(encoding: Option<pb2::Encoding>) -> PageEncoding {
-  match encoding.and_then(|encoding| encoding.location) {
-    Some(pb2::encoding::Location::Direct(direct)) => {
-      match prost_types::Any::decode(direct.encoding.as_slice()) {
-        Ok(any) => PageEncoding::Direct {
-          type_url: any.type_url,
-          value: any.value,
-        },
-        Err(_) => PageEncoding::Direct {
-          type_url: "<invalid Any>".to_string(),
-          value: direct.encoding,
-        },
-      }
-    }
-    Some(pb2::encoding::Location::Indirect(deferred)) => PageEncoding::Deferred {
-      position: deferred.buffer_location,
-      length: deferred.buffer_length,
-    },
-    Some(pb2::encoding::Location::None(_)) | None => PageEncoding::None,
+fn decode_footer(source: &mut FileSource, file_size: u64) -> Result<Footer> {
+  if file_size < FOOTER_LEN_V1 {
+    bail!(
+      "file is too small to be a Lance file: {file_size} bytes \
+       (the smallest footer is {FOOTER_LEN_V1} bytes)"
+    );
   }
+  let tail_len = file_size.min(FOOTER_LEN_V2) as usize;
+  let tail = source.read_at(file_size - tail_len as u64, tail_len)?;
+  Footer::parse(&tail)
 }
 
-fn decode_column(
-  index: u32,
-  metadata: pb2::ColumnMetadata,
-  warnings: &mut Vec<String>,
-) -> ColumnMeta {
-  let pages = metadata
-    .pages
-    .into_iter()
-    .enumerate()
-    .map(|(page_index, page)| {
-      if page.buffer_offsets.len() != page.buffer_sizes.len() {
-        warnings.push(format!(
-          "column {index} page {page_index}: {} buffer offset(s) but {} size(s)",
-          page.buffer_offsets.len(),
-          page.buffer_sizes.len()
-        ));
-      }
-      let buffers = page
-        .buffer_offsets
-        .iter()
-        .copied()
-        .zip(page.buffer_sizes.iter().copied())
-        .map(|(position, size)| BufferRange { position, size })
-        .collect();
-      PageMeta {
-        index: page_index as u32,
-        buffers,
-        num_rows: page.length,
-        priority: page.priority,
-        encoding: decode_encoding(page.encoding),
-      }
-    })
-    .collect();
+fn decode_global_buffers(source: &mut FileSource, footer: &V2Footer) -> Result<Vec<BufferRange>> {
+  read_offset_table(
+    source,
+    footer.global_buff_offsets_start,
+    footer.num_global_buffers,
+    "GBO",
+  )
+}
 
-  if metadata.buffer_offsets.len() != metadata.buffer_sizes.len() {
-    warnings.push(format!(
-      "column {index}: {} column buffer offset(s) but {} size(s)",
-      metadata.buffer_offsets.len(),
-      metadata.buffer_sizes.len()
+fn decode_column_offset_table(
+  source: &mut FileSource,
+  footer: &V2Footer,
+) -> Result<Vec<BufferRange>> {
+  read_offset_table(
+    source,
+    footer.column_meta_offsets_start,
+    footer.num_columns,
+    "CMO",
+  )
+}
+
+fn decode_schema(
+  source: &mut FileSource,
+  file_size: u64,
+  global_buffers: &[BufferRange],
+) -> Result<(Option<pb::Schema>, Option<u64>)> {
+  let Some(schema_buffer) = global_buffers.first().copied() else {
+    bail!("file contains no global buffers; global buffer 0 is expected to hold the file schema");
+  };
+  if schema_buffer.end() > file_size {
+    bail!(
+      "global buffer 0 (schema) is out of bounds: {}..{} (file size {file_size})",
+      schema_buffer.position,
+      schema_buffer.end()
+    );
+  }
+  let schema_bytes = source.read_at(schema_buffer.position, schema_buffer.size as usize)?;
+  let descriptor = pb::FileDescriptor::decode(schema_bytes.as_slice())
+    .context("failed to decode global buffer 0 as FileDescriptor")?;
+  Ok((descriptor.schema, Some(descriptor.length)))
+}
+
+fn decode_columns(
+  source: &mut FileSource,
+  file_size: u64,
+  footer: &V2Footer,
+  table: &[BufferRange],
+  warnings: &mut Vec<String>,
+) -> Vec<ColumnMeta> {
+  let mut columns = Vec::with_capacity(table.len());
+  for (index, entry) in table.iter().enumerate() {
+    columns.push(load_column(
+      source,
+      file_size,
+      footer,
+      index as u32,
+      *entry,
+      warnings,
     ));
   }
-  let column_buffers = metadata
-    .buffer_offsets
-    .iter()
-    .copied()
-    .zip(metadata.buffer_sizes.iter().copied())
-    .map(|(position, size)| BufferRange { position, size })
-    .collect();
+  columns
+}
 
-  ColumnMeta {
-    index,
-    pages,
-    column_buffers,
-    undecodable: false,
+fn load_column(
+  source: &mut FileSource,
+  file_size: u64,
+  footer: &V2Footer,
+  index: u32,
+  entry: BufferRange,
+  warnings: &mut Vec<String>,
+) -> ColumnMeta {
+  if entry.position < footer.column_meta_start || entry.end() > footer.column_meta_offsets_start {
+    warnings.push(format!(
+      "column {index}: metadata range {}..{} is outside the column metadata region {}..{}",
+      entry.position,
+      entry.end(),
+      footer.column_meta_start,
+      footer.column_meta_offsets_start
+    ));
+  }
+  if entry.end() > file_size {
+    warnings.push(format!(
+      "column {index}: metadata range {}..{} is out of bounds (file size {file_size})",
+      entry.position,
+      entry.end()
+    ));
+    return ColumnMeta::undecodable(index);
+  }
+
+  match source.read_at(entry.position, entry.size as usize) {
+    Ok(bytes) => match pb2::ColumnMetadata::decode(bytes.as_slice()) {
+      Ok(metadata) => ColumnMeta::decode(index, metadata, warnings),
+      Err(error) => {
+        warnings.push(format!(
+          "column {index}: failed to decode ColumnMetadata: {error}"
+        ));
+        ColumnMeta::undecodable(index)
+      }
+    },
+    Err(error) => {
+      warnings.push(format!("column {index}: {error:#}"));
+      ColumnMeta::undecodable(index)
+    }
   }
 }
 

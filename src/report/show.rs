@@ -82,6 +82,16 @@ pub struct RepIndexReport {
   pub values: Vec<u64>,
 }
 
+/// Parsed page-internal structure. Only layouts with decoded internals get a
+/// variant; everything else (constant, legacy, sparse, parse failures) is
+/// `None` and reported through warnings.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PageInternals {
+  MiniBlock { chunks: ChunkTableReport },
+  FullZip { rep_index: Option<RepIndexReport> },
+}
+
 #[derive(Debug, Serialize)]
 pub struct ShowReport {
   /// Global page index (physical order), the value `--page` selects.
@@ -98,8 +108,7 @@ pub struct ShowReport {
   pub type_url: Option<String>,
   pub layout: Option<LayoutReport>,
   pub buffers: Vec<PageBufferReport>,
-  pub chunks: Option<ChunkTableReport>,
-  pub full_zip_rep_index: Option<RepIndexReport>,
+  pub internals: Option<PageInternals>,
   pub hexdump: Vec<String>,
   pub raw: Option<String>,
   pub warnings: Vec<String>,
@@ -124,7 +133,7 @@ impl ShowReport {
     let mut warnings = meta.warnings.clone();
     let buffers = read_buffers(source, page)?;
 
-    let decoded = match layout::decode(&page.encoding) {
+    let decoded = match layout::decode_layout(&page.encoding) {
       Ok(decoded) => decoded,
       Err(error) => {
         warnings.push(format!("{error:#}"));
@@ -144,11 +153,11 @@ impl ShowReport {
       }
     });
 
-    let chunks = match decoded.as_ref() {
+    let internals = match decoded.as_ref() {
       Some(DecodedLayout::Structural(layout)) => match layout.layout.as_ref() {
         Some(pb21::page_layout::Layout::MiniBlockLayout(mini)) => {
           match parse_mini_block(mini, page, &buffers, &mut warnings) {
-            Ok(Some(table)) => Some(table),
+            Ok(Some(chunks)) => Some(PageInternals::MiniBlock { chunks }),
             Ok(None) => None,
             Err(error) => {
               warnings.push(format!("failed to decode mini-block chunk table: {error}"));
@@ -156,16 +165,9 @@ impl ShowReport {
             }
           }
         }
-        _ => None,
-      },
-      _ => None,
-    };
-
-    let full_zip_rep_index = match decoded.as_ref() {
-      Some(DecodedLayout::Structural(layout)) => match layout.layout.as_ref() {
-        Some(pb21::page_layout::Layout::FullZipLayout(full_zip)) => {
-          try_full_zip_rep_index(full_zip, &buffers, page.num_rows, &mut warnings)
-        }
+        Some(pb21::page_layout::Layout::FullZipLayout(full_zip)) => Some(PageInternals::FullZip {
+          rep_index: try_full_zip_rep_index(full_zip, &buffers, page.num_rows, &mut warnings),
+        }),
         _ => None,
       },
       _ => None,
@@ -213,8 +215,7 @@ impl ShowReport {
       type_url: page.encoding.type_url().map(str::to_string),
       layout,
       buffers: page_buffers,
-      chunks,
-      full_zip_rep_index,
+      internals,
       hexdump,
       raw,
       warnings,
@@ -268,79 +269,83 @@ impl Report for ShowReport {
       out.push_str(&table.render(style));
     }
 
-    if let Some(chunks) = &self.chunks {
-      out.push('\n');
-      let _ = writeln!(
-        out,
-        "{}",
-        style.heading(&format!(
-          "Mini-block chunks ({} chunks, {} items, {} value buffer(s))",
-          chunks.num_chunks, chunks.num_items, chunks.num_buffers
-        ))
-      );
-      let mut table = Table::new(&[
-        "chunk",
-        "offset",
-        "start",
-        "bytes",
-        "values",
-        "levels",
-        "rep",
-        "def",
-        "header",
-        "value bufs",
-        "rep index",
-      ])
-      .right_align(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
-      for chunk in &chunks.chunks {
-        table.push(vec![
-          chunk.index.to_string(),
-          chunk.offset.to_string(),
-          chunk.start.to_string(),
-          chunk.bytes.to_string(),
-          chunk.values.to_string(),
-          chunk.num_levels.to_string(),
-          chunk.rep_bytes.to_string(),
-          chunk.def_bytes.to_string(),
-          chunk.header_bytes.to_string(),
-          chunk
-            .value_sizes
-            .iter()
-            .map(|size| size.to_string())
-            .collect::<Vec<_>>()
-            .join(","),
-          chunk
-            .rep_index
-            .as_ref()
-            .map(|words| {
-              words
-                .iter()
-                .map(|word| word.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-            })
-            .unwrap_or_else(|| "-".to_string()),
-        ]);
+    match &self.internals {
+      Some(PageInternals::MiniBlock { chunks }) => {
+        out.push('\n');
+        let _ = writeln!(
+          out,
+          "{}",
+          style.heading(&format!(
+            "Mini-block chunks ({} chunks, {} items, {} value buffer(s))",
+            chunks.num_chunks, chunks.num_items, chunks.num_buffers
+          ))
+        );
+        let mut table = Table::new(&[
+          "chunk",
+          "offset",
+          "start",
+          "bytes",
+          "values",
+          "levels",
+          "rep",
+          "def",
+          "header",
+          "value bufs",
+          "rep index",
+        ])
+        .right_align(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        for chunk in &chunks.chunks {
+          table.push(vec![
+            chunk.index.to_string(),
+            chunk.offset.to_string(),
+            chunk.start.to_string(),
+            chunk.bytes.to_string(),
+            chunk.values.to_string(),
+            chunk.num_levels.to_string(),
+            chunk.rep_bytes.to_string(),
+            chunk.def_bytes.to_string(),
+            chunk.header_bytes.to_string(),
+            chunk
+              .value_sizes
+              .iter()
+              .map(|size| size.to_string())
+              .collect::<Vec<_>>()
+              .join(","),
+            chunk
+              .rep_index
+              .as_ref()
+              .map(|words| {
+                words
+                  .iter()
+                  .map(|word| word.to_string())
+                  .collect::<Vec<_>>()
+                  .join(",")
+              })
+              .unwrap_or_else(|| "-".to_string()),
+          ]);
+        }
+        out.push_str(&table.render(style));
+        render_warnings(&mut out, style, &chunks.warnings);
       }
-      out.push_str(&table.render(style));
-      render_warnings(&mut out, style, &chunks.warnings);
-    }
-
-    if let Some(rep_index) = &self.full_zip_rep_index {
-      out.push('\n');
-      let _ = writeln!(
-        out,
-        "{}",
-        style.heading(&format!(
-          "Full-zip repetition index ({} entries, {}-byte entries)",
-          rep_index.num_entries, rep_index.entry_width
-        ))
-      );
-      let shown = rep_index.values.len().min(32);
-      let _ = writeln!(out, "{:?}", &rep_index.values[..shown]);
-      if shown < rep_index.values.len() {
-        let _ = writeln!(out, "... {} more entry(s)", rep_index.values.len() - shown);
+      Some(PageInternals::FullZip {
+        rep_index: Some(rep_index),
+      }) => {
+        out.push('\n');
+        let _ = writeln!(
+          out,
+          "{}",
+          style.heading(&format!(
+            "Full-zip repetition index ({} entries, {}-byte entries)",
+            rep_index.num_entries, rep_index.entry_width
+          ))
+        );
+        let shown = rep_index.values.len().min(32);
+        let _ = writeln!(out, "{:?}", &rep_index.values[..shown]);
+        if shown < rep_index.values.len() {
+          let _ = writeln!(out, "... {} more entry(s)", rep_index.values.len() - shown);
+        }
       }
+      Some(PageInternals::FullZip { rep_index: None }) | None => {}
     }
 
     if !self.hexdump.is_empty() {
@@ -546,5 +551,17 @@ fn full_zip_has_rep_index(layout: &pb21::FullZipLayout) -> bool {
     Some(pb21::full_zip_layout::Details::BitsPerValue(_)) => layout.bits_rep > 0,
     Some(pb21::full_zip_layout::Details::BitsPerOffset(_)) => true,
     None => false,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn serializes_internals_as_tagged_enum() {
+    let json = serde_json::to_value(PageInternals::FullZip { rep_index: None }).unwrap();
+    assert_eq!(json["kind"], "full-zip");
+    assert!(json["rep_index"].is_null());
   }
 }
