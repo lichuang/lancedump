@@ -165,13 +165,13 @@ fn show_detail_v2_1_fixed_size_list() {
 
 #[test]
 fn show_detail_variable_values() {
-  let report = run_json("variable_strings.lance", 0, &["--detail"]);
+  let report = run_json("nested_empty_students.lance", 0, &["--detail"]);
   let chunk = &report["internals"]["chunks"]["chunks"][0];
   let values = &chunk["decoded_values"];
   assert_eq!(values["kind"], "variable");
   assert_eq!(values["bits_per_offset"], 32);
-  assert_eq!(values["values"], serde_json::json!(["a", "b", "c", "d"]));
-  assert_eq!(values["sizes"], serde_json::json!([1, 1, 1, 1]));
+  assert_eq!(values["values"], serde_json::json!(["Hi", "a", "Hello", "test"]));
+  assert_eq!(values["sizes"], serde_json::json!([2, 1, 5, 4]));
 
   let output = ldp()
     .args([
@@ -179,15 +179,15 @@ fn show_detail_variable_values() {
       "-d",
       "--page",
       "0",
-      fixture("variable_strings.lance").to_str().unwrap(),
+      fixture("nested_empty_students.lance").to_str().unwrap(),
     ])
     .output()
     .unwrap();
   assert!(output.status.success());
   let text = String::from_utf8(output.stdout).unwrap();
   assert!(text.contains("values (4 values, variable, 32-bit offsets)"));
-  assert!(text.contains("[0] (1 bytes) a"));
-  assert!(text.contains("value sizes (4): [1, 1, 1, 1]"));
+  assert!(text.contains("[0] (2 bytes) Hi"));
+  assert!(text.contains("value sizes (4): [2, 1, 5, 4]"));
   assert!(text.contains("value buffer sizes (1 buffer)"));
 }
 
