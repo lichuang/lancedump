@@ -56,6 +56,7 @@ fn show_json_v2_1_miniblock() {
   assert_eq!(chunks["total_values"], 256);
   assert_eq!(chunks["chunks"][0]["offset"], 0);
   assert_eq!(chunks["chunks"][0]["start"], 64);
+  assert_eq!(chunks["chunks"][0]["metadata_word"], 8_198);
   assert_eq!(chunks["chunks"][0]["bytes"], 4_104);
   assert_eq!(chunks["chunks"][0]["values"], 64);
   assert_eq!(chunks["chunks"][3]["values"], 64);
@@ -80,8 +81,8 @@ fn show_json_v2_2_miniblock_with_repdef() {
   let last = &chunks["chunks"][16];
   assert_eq!(last["values"], 32);
   assert_eq!(last["num_levels"], 32);
-  assert!(last["rep_bytes"].as_u64().unwrap() > 0);
-  assert!(last["def_bytes"].as_u64().unwrap() > 0);
+  assert!(last["rep_buffer"][1].as_u64().unwrap() > 0);
+  assert!(last["def_buffer"][1].as_u64().unwrap() > 0);
   assert_eq!(last["start"], 34_624);
   assert_eq!(last["rep_index"][0], 65_537);
   assert_eq!(last["rep_index"][1], 0);

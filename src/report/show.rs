@@ -49,17 +49,16 @@ pub struct ChunkReport {
   pub offset: u64,
   /// Absolute file offset (`data buffer start + offset`).
   pub start: u64,
+  /// Raw 2-byte (v2.1) or 4-byte (v2.2+) metadata word.
+  pub metadata_word: u64,
   pub bytes: u64,
   pub values: u64,
   pub log2_values: u8,
   pub num_levels: u16,
-  pub rep_bytes: u16,
-  pub def_bytes: u16,
+  pub rep_buffer: Option<[u64; 2]>,
+  pub def_buffer: Option<[u64; 2]>,
   pub header_bytes: u64,
-  pub value_sizes: Vec<u32>,
-  pub rep_range: Option<[u64; 2]>,
-  pub def_range: Option<[u64; 2]>,
-  pub value_ranges: Vec<[u64; 2]>,
+  pub value_buffers: Vec<[u64; 2]>,
   /// `depth + 1` words: rows ending, leftover items, ... (see the format spec).
   pub rep_index: Option<Vec<u64>>,
 }
@@ -156,9 +155,10 @@ impl ShowReport {
     let internals = match decoded.as_ref() {
       Some(DecodedLayout::Structural(layout)) => match layout.layout.as_ref() {
         Some(pb21::page_layout::Layout::MiniBlockLayout(mini)) => {
-          match parse_mini_block(mini, page, &buffers, &mut warnings) {
-            Ok(Some(chunks)) => Some(PageInternals::MiniBlock { chunks }),
-            Ok(None) => None,
+          match miniblock::parse(mini, page, &buffers, &mut warnings) {
+            Ok(table) => Some(PageInternals::MiniBlock {
+              chunks: chunk_table_report(table),
+            }),
             Err(error) => {
               warnings.push(format!("failed to decode mini-block chunk table: {error}"));
               None
@@ -302,13 +302,19 @@ impl Report for ShowReport {
             chunk.bytes.to_string(),
             chunk.values.to_string(),
             chunk.num_levels.to_string(),
-            chunk.rep_bytes.to_string(),
-            chunk.def_bytes.to_string(),
+            chunk
+              .rep_buffer
+              .map(|span| span[1].to_string())
+              .unwrap_or_else(|| "-".to_string()),
+            chunk
+              .def_buffer
+              .map(|span| span[1].to_string())
+              .unwrap_or_else(|| "-".to_string()),
             chunk.header_bytes.to_string(),
             chunk
-              .value_sizes
+              .value_buffers
               .iter()
-              .map(|size| size.to_string())
+              .map(|span| span[1].to_string())
               .collect::<Vec<_>>()
               .join(","),
             chunk
@@ -385,35 +391,13 @@ fn read_buffers(source: &mut FileSource, page: &PageMeta) -> Result<Vec<Vec<u8>>
     .collect()
 }
 
-fn parse_mini_block(
-  layout: &pb21::MiniBlockLayout,
-  page: &PageMeta,
-  buffers: &[Vec<u8>],
-  warnings: &mut Vec<String>,
-) -> Result<Option<ChunkTableReport>> {
-  let Some(metadata) = buffers.first() else {
-    bail!("mini-block page has no metadata buffer");
-  };
-  let Some(data) = buffers.get(1) else {
-    bail!("mini-block page has no data buffer");
-  };
-  let rep_index = miniblock_rep_index(layout)
-    .and_then(|index| buffers.get(index))
-    .map(|bytes| bytes.as_slice());
-  let table = miniblock::parse(metadata, data, layout, rep_index)?;
-  let data_start = page.buffers[1].position;
-  let num_items = layout.num_items;
+fn chunk_table_report(table: miniblock::ChunkTable) -> ChunkTableReport {
   let total_values = table.total_values();
-  if total_values != num_items {
-    warnings.push(format!(
-      "chunk values sum to {total_values} but layout.num_items is {num_items}"
-    ));
-  }
-  Ok(Some(ChunkTableReport {
+  ChunkTableReport {
     entry_width: table.entry_width,
     num_buffers: table.num_buffers,
     num_chunks: table.chunks.len(),
-    num_items,
+    num_items: table.num_items,
     total_values,
     chunks: table
       .chunks
@@ -421,34 +405,25 @@ fn parse_mini_block(
       .map(|chunk| ChunkReport {
         index: chunk.index,
         offset: chunk.offset,
-        start: data_start + chunk.offset,
-        bytes: chunk.bytes,
-        values: chunk.values,
-        log2_values: chunk.log2_values,
+        start: chunk.start,
+        metadata_word: chunk.metadata.word,
+        bytes: chunk.metadata.bytes(),
+        values: chunk.metadata.values,
+        log2_values: chunk.metadata.log2_values(),
         num_levels: chunk.num_levels,
-        rep_bytes: chunk.rep_bytes,
-        def_bytes: chunk.def_bytes,
+        rep_buffer: chunk.rep_buffer.map(|span| [span.offset, span.bytes]),
+        def_buffer: chunk.def_buffer.map(|span| [span.offset, span.bytes]),
         header_bytes: chunk.header_bytes,
-        value_sizes: chunk.value_sizes,
-        rep_range: chunk.rep_range.map(|(start, len)| [start, len]),
-        def_range: chunk.def_range.map(|(start, len)| [start, len]),
-        value_ranges: chunk
-          .value_ranges
+        value_buffers: chunk
+          .value_buffers
           .into_iter()
-          .map(|(start, len)| [start, len])
+          .map(|span| [span.offset, span.bytes])
           .collect(),
         rep_index: chunk.rep_index,
       })
       .collect(),
     warnings: table.warnings,
-  }))
-}
-
-fn miniblock_rep_index(layout: &pb21::MiniBlockLayout) -> Option<usize> {
-  if layout.repetition_index_depth == 0 {
-    return None;
   }
-  Some(if layout.dictionary.is_some() { 3 } else { 2 })
 }
 
 fn try_full_zip_rep_index(
