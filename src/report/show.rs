@@ -398,11 +398,12 @@ impl Report for ShowReport {
               push_decoded_values(&mut out, values);
             }
             if let Some(sizes) = &chunk.value_buffer_sizes {
-              push_array(
-                &mut out,
-                &format!("value buffer sizes ({})", sizes.len()),
-                sizes,
-              );
+              let label = if sizes.len() == 1 {
+                "value buffer sizes (1 buffer)".to_string()
+              } else {
+                format!("value buffer sizes ({} buffers)", sizes.len())
+              };
+              push_array(&mut out, &label, sizes);
             }
           }
         }
@@ -676,6 +677,7 @@ fn push_decoded_values(out: &mut String, values: &DecodedValuesReport) {
       for (index, (value, size)) in values.iter().zip(sizes).enumerate() {
         let _ = writeln!(out, "    [{index}] ({size} bytes) {value}");
       }
+      push_array(out, &format!("value sizes ({})", sizes.len()), sizes);
     }
   }
 }

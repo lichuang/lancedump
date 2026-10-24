@@ -196,11 +196,12 @@ chunk 0:
   rep levels (5): [1, 0, 1, 1, 1]
   def levels (5): [0, 0, 1, 0, 0]
   values (4 values, variable, 32-bit offsets):
-    [0] (1 bytes) a
-    [1] (1 bytes) b
-    [2] (1 bytes) c
-    [3] (1 bytes) d
-  value buffer sizes (1): [24]
+    [0] (2 bytes) Hi
+    [1] (1 bytes) a
+    [2] (5 bytes) Hello
+    [3] (4 bytes) test
+  value sizes (4): [2, 1, 5, 4]
+  value buffer sizes (1 buffer): [32]
 ```
 
 ```bash

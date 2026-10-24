@@ -187,6 +187,8 @@ fn show_detail_variable_values() {
   let text = String::from_utf8(output.stdout).unwrap();
   assert!(text.contains("values (4 values, variable, 32-bit offsets)"));
   assert!(text.contains("[0] (1 bytes) a"));
+  assert!(text.contains("value sizes (4): [1, 1, 1, 1]"));
+  assert!(text.contains("value buffer sizes (1 buffer)"));
 }
 
 #[test]
