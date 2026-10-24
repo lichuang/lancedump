@@ -170,7 +170,9 @@ metadata、孤儿节点与循环 parent 链。
 完成于：页 buffer 读取与角色标注、完整 `PageLayout` 参数输出、mini-block
 chunk 表（2B/4B 元数据、chunk header、rep/def/value 区间、repetition index）、
 full-zip repetition index（自动推断 1/2/4/8 字节宽度）、`--hex` / `--hex-limit`
-/ `--raw`，text / json 两种格式。测试覆盖 v2.1 mini-block、v2.2 mini-block+repdef、
+/ `--raw` / `--detail`，text / json 两种格式。`--detail` 会解码 mini-block 的
+rep/def levels、value 数组和 value buffer sizes（flat / RLE / inline 与
+out-of-line bitpacking / fixed-size-list；其它压缩降级为 warning）。测试覆盖 v2.1 mini-block、v2.2 mini-block+repdef、
 v2.2 constant、v2.0 legacy，以及 hex/raw。
 
 目标：单页完整解剖。

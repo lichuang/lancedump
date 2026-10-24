@@ -7,8 +7,10 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::format::container::{FileMeta, PageMeta};
+use crate::format::decode;
 use crate::format::layout::{self, DecodedLayout};
 use crate::format::miniblock;
+use crate::format::miniblock::ChunkSpan;
 use crate::proto::pb21;
 use crate::report::Report;
 use crate::source::FileSource;
@@ -19,6 +21,7 @@ pub struct ShowOptions {
   pub hex: bool,
   pub hex_limit: usize,
   pub raw: bool,
+  pub detail: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +64,21 @@ pub struct ChunkReport {
   pub value_buffers: Vec<[u64; 2]>,
   /// `depth + 1` words: rows ending, leftover items, ... (see the format spec).
   pub rep_index: Option<Vec<u64>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub rep_levels: Option<Vec<u16>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub def_levels: Option<Vec<u16>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub decoded_values: Option<DecodedValuesReport>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub value_buffer_sizes: Option<Vec<u64>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DecodedValuesReport {
+  pub bits_per_value: u64,
+  pub items_per_value: u64,
+  pub values: Vec<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,12 +170,16 @@ impl ShowReport {
       }
     });
 
+    let data = buffers
+      .get(1)
+      .map(|buffer| buffer.as_slice())
+      .unwrap_or(&[]);
     let internals = match decoded.as_ref() {
       Some(DecodedLayout::Structural(layout)) => match layout.layout.as_ref() {
         Some(pb21::page_layout::Layout::MiniBlockLayout(mini)) => {
           match miniblock::parse(mini, page, &buffers, &mut warnings) {
             Ok(table) => Some(PageInternals::MiniBlock {
-              chunks: chunk_table_report(table),
+              chunks: chunk_table_report(table, mini, data, options.detail, &mut warnings),
             }),
             Err(error) => {
               warnings.push(format!("failed to decode mini-block chunk table: {error}"));
@@ -172,6 +194,18 @@ impl ShowReport {
       },
       _ => None,
     };
+
+    if options.detail {
+      let kind = decoded
+        .as_ref()
+        .map(|decoded| layout::summary(decoded).kind)
+        .unwrap_or("unknown");
+      if kind != "mini-block" {
+        warnings.push(format!(
+          "detail arrays are only supported for mini-block pages (layout: {kind})"
+        ));
+      }
+    }
 
     let roles = buffer_roles(decoded.as_ref(), page.buffers.len());
     let page_buffers = page
@@ -332,6 +366,38 @@ impl Report for ShowReport {
         }
         out.push_str(&table.render(style));
         render_warnings(&mut out, style, &chunks.warnings);
+
+        if chunks.chunks.iter().any(|chunk| {
+          chunk.rep_levels.is_some() || chunk.def_levels.is_some() || chunk.decoded_values.is_some()
+        }) {
+          out.push('\n');
+          let _ = writeln!(out, "{}", style.heading("Chunk details"));
+          for chunk in &chunks.chunks {
+            if chunk.rep_levels.is_none()
+              && chunk.def_levels.is_none()
+              && chunk.decoded_values.is_none()
+            {
+              continue;
+            }
+            let _ = writeln!(out, "chunk {}:", chunk.index);
+            if let Some(levels) = &chunk.rep_levels {
+              push_array(&mut out, &format!("rep levels ({})", levels.len()), levels);
+            }
+            if let Some(levels) = &chunk.def_levels {
+              push_array(&mut out, &format!("def levels ({})", levels.len()), levels);
+            }
+            if let Some(values) = &chunk.decoded_values {
+              push_decoded_values(&mut out, values);
+            }
+            if let Some(sizes) = &chunk.value_buffer_sizes {
+              push_array(
+                &mut out,
+                &format!("value buffer sizes ({})", sizes.len()),
+                sizes,
+              );
+            }
+          }
+        }
       }
       Some(PageInternals::FullZip {
         rep_index: Some(rep_index),
@@ -391,7 +457,13 @@ fn read_buffers(source: &mut FileSource, page: &PageMeta) -> Result<Vec<Vec<u8>>
     .collect()
 }
 
-fn chunk_table_report(table: miniblock::ChunkTable) -> ChunkTableReport {
+fn chunk_table_report(
+  table: miniblock::ChunkTable,
+  layout: &pb21::MiniBlockLayout,
+  data: &[u8],
+  detail: bool,
+  warnings: &mut Vec<String>,
+) -> ChunkTableReport {
   let total_values = table.total_values();
   ChunkTableReport {
     entry_width: table.entry_width,
@@ -402,28 +474,167 @@ fn chunk_table_report(table: miniblock::ChunkTable) -> ChunkTableReport {
     chunks: table
       .chunks
       .into_iter()
-      .map(|chunk| ChunkReport {
-        index: chunk.index,
-        offset: chunk.offset,
-        start: chunk.start,
-        metadata_word: chunk.metadata.word,
-        bytes: chunk.metadata.bytes(),
-        values: chunk.metadata.values,
-        log2_values: chunk.metadata.log2_values(),
-        num_levels: chunk.num_levels,
-        rep_buffer: chunk.rep_buffer.map(|span| [span.offset, span.bytes]),
-        def_buffer: chunk.def_buffer.map(|span| [span.offset, span.bytes]),
-        header_bytes: chunk.header_bytes,
-        value_buffers: chunk
-          .value_buffers
-          .into_iter()
-          .map(|span| [span.offset, span.bytes])
-          .collect(),
-        rep_index: chunk.rep_index,
+      .map(|chunk| {
+        let chunk_bytes = data
+          .get(chunk.offset as usize..chunk.offset as usize + chunk.metadata.bytes() as usize)
+          .unwrap_or(&[]);
+        let (rep_levels, def_levels, decoded_values, value_buffer_sizes) = if detail {
+          (
+            decode_level_detail(
+              layout.rep_compression.as_ref(),
+              chunk.rep_buffer,
+              chunk_bytes,
+              chunk.num_levels,
+              "rep",
+              chunk.index,
+              warnings,
+            ),
+            decode_level_detail(
+              layout.def_compression.as_ref(),
+              chunk.def_buffer,
+              chunk_bytes,
+              chunk.num_levels,
+              "def",
+              chunk.index,
+              warnings,
+            ),
+            decode_value_detail(
+              layout.value_compression.as_ref(),
+              &chunk,
+              chunk_bytes,
+              warnings,
+            ),
+            Some(chunk.value_buffers.iter().map(|span| span.bytes).collect()),
+          )
+        } else {
+          (None, None, None, None)
+        };
+
+        ChunkReport {
+          index: chunk.index,
+          offset: chunk.offset,
+          start: chunk.start,
+          metadata_word: chunk.metadata.word,
+          bytes: chunk.metadata.bytes(),
+          values: chunk.metadata.values,
+          log2_values: chunk.metadata.log2_values(),
+          num_levels: chunk.num_levels,
+          rep_buffer: chunk.rep_buffer.map(|span| [span.offset, span.bytes]),
+          def_buffer: chunk.def_buffer.map(|span| [span.offset, span.bytes]),
+          header_bytes: chunk.header_bytes,
+          value_buffers: chunk
+            .value_buffers
+            .into_iter()
+            .map(|span| [span.offset, span.bytes])
+            .collect(),
+          rep_index: chunk.rep_index,
+          rep_levels,
+          def_levels,
+          decoded_values,
+          value_buffer_sizes,
+        }
       })
       .collect(),
     warnings: table.warnings,
   }
+}
+
+fn span_bytes(data: &[u8], span: ChunkSpan) -> Option<&[u8]> {
+  let start = span.offset as usize;
+  data.get(start..start + span.bytes as usize)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_level_detail(
+  compression: Option<&pb21::CompressiveEncoding>,
+  span: Option<ChunkSpan>,
+  chunk_bytes: &[u8],
+  num_levels: u16,
+  label: &str,
+  chunk_index: usize,
+  warnings: &mut Vec<String>,
+) -> Option<Vec<u16>> {
+  let (Some(compression), Some(span)) = (compression, span) else {
+    return None;
+  };
+  let Some(bytes) = span_bytes(chunk_bytes, span) else {
+    warnings.push(format!(
+      "chunk {chunk_index}: {label} buffer is out of bounds"
+    ));
+    return None;
+  };
+  match decode::decode_levels(compression, bytes, num_levels as u64) {
+    Ok(levels) => Some(levels),
+    Err(error) => {
+      warnings.push(format!(
+        "chunk {chunk_index}: failed to decode {label} levels: {error:#}"
+      ));
+      None
+    }
+  }
+}
+
+fn decode_value_detail(
+  compression: Option<&pb21::CompressiveEncoding>,
+  chunk: &miniblock::Chunk,
+  chunk_bytes: &[u8],
+  warnings: &mut Vec<String>,
+) -> Option<DecodedValuesReport> {
+  let compression = compression?;
+  let mut buffers = Vec::with_capacity(chunk.value_buffers.len());
+  for span in &chunk.value_buffers {
+    let Some(bytes) = span_bytes(chunk_bytes, *span) else {
+      warnings.push(format!(
+        "chunk {}: value buffer is out of bounds",
+        chunk.index
+      ));
+      return None;
+    };
+    buffers.push(bytes);
+  }
+  match decode::decode_values(compression, &buffers, chunk.metadata.values) {
+    Ok(decoded) => Some(DecodedValuesReport {
+      bits_per_value: decoded.bits_per_value,
+      items_per_value: decoded.items_per_value,
+      values: decoded.values,
+    }),
+    Err(error) => {
+      warnings.push(format!(
+        "chunk {}: failed to decode values: {error:#}",
+        chunk.index
+      ));
+      None
+    }
+  }
+}
+
+fn push_array<T: ToString>(out: &mut String, label: &str, values: &[T]) {
+  let _ = write!(out, "  {label}: [");
+  for (index, value) in values.iter().enumerate() {
+    if index > 0 {
+      out.push_str(", ");
+    }
+    if index > 0 && index % 32 == 0 {
+      out.push('\n');
+      out.push_str("    ");
+    }
+    out.push_str(&value.to_string());
+  }
+  out.push_str("]\n");
+}
+
+fn push_decoded_values(out: &mut String, values: &DecodedValuesReport) {
+  let items = values.items_per_value.max(1);
+  let logical = values.values.len() as u64 / items;
+  let label = if items > 1 {
+    format!(
+      "values ({logical} x {items} items, {}-bit)",
+      values.bits_per_value
+    )
+  } else {
+    format!("values ({logical}, {}-bit)", values.bits_per_value)
+  };
+  push_array(out, &label, &values.values);
 }
 
 fn try_full_zip_rep_index(

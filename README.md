@@ -180,6 +180,14 @@ parameters, page buffers and their roles, the mini-block chunk table, and the
 repetition index. The output also reports the page's `column` and per-column
 `page` for cross-referencing.
 
+With `--detail`, each mini-block chunk also prints its decoded repetition levels,
+definition levels, flattened value array (with bit width and items-per-value),
+and value buffer sizes. Arrays are printed in full. Supported compressions are
+flat, RLE, inline/out-of-line bitpacking, and fixed-size-list; other encodings
+(FSST, dictionary, general, variable, packed structs) are reported as warnings.
+Full-zip, constant, and legacy pages currently report that detail decoding is
+only supported for mini-block pages.
+
 ```bash
 ldp show data/xxxx.lance --page 1
 ldp show data/xxxx.lance --page 1 --hex --hex-limit 256
@@ -192,6 +200,7 @@ ldp show data/xxxx.lance --page 1 --raw
 | `--hex` | Include a hex dump of each page buffer |
 | `--hex-limit BYTES` | Maximum bytes dumped per buffer (default: 1024) |
 | `--raw` | Print the decoded protobuf layout in debug form |
+| `-d`, `--detail` | Decode and print rep/def levels and value arrays for each mini-block chunk |
 
 ```text
 Summary

@@ -265,7 +265,7 @@ fn parse_buffers(
       );
     }
 
-    let mut chunk = parse_chunk_header(
+    let mut chunk = Chunk::parse(
       index,
       &data[start..end],
       layout,
@@ -296,114 +296,116 @@ fn parse_buffers(
   })
 }
 
-fn parse_chunk_header(
-  index: usize,
-  chunk: &[u8],
-  layout: &pb21::MiniBlockLayout,
-  offset: u64,
-  metadata: ChunkMetadata,
-  warnings: &mut Vec<String>,
-) -> Result<Chunk> {
-  let nbuf = layout.num_buffers as usize;
-  let size_width = if layout.has_large_chunk { 4 } else { 2 };
-  let has_rep = layout.rep_compression.is_some();
-  let has_def = layout.def_compression.is_some();
+impl Chunk {
+  fn parse(
+    index: usize,
+    chunk: &[u8],
+    layout: &pb21::MiniBlockLayout,
+    offset: u64,
+    metadata: ChunkMetadata,
+    warnings: &mut Vec<String>,
+  ) -> Result<Self> {
+    let nbuf = layout.num_buffers as usize;
+    let size_width = if layout.has_large_chunk { 4 } else { 2 };
+    let has_rep = layout.rep_compression.is_some();
+    let has_def = layout.def_compression.is_some();
 
-  let header_len = 2 + usize::from(has_rep) * 2 + usize::from(has_def) * 2 + nbuf * size_width;
-  if chunk.len() < header_len {
-    bail!(
-      "chunk {index} is {} bytes, shorter than its {header_len}-byte header",
-      chunk.len()
-    );
-  }
+    let header_len = 2 + usize::from(has_rep) * 2 + usize::from(has_def) * 2 + nbuf * size_width;
+    if chunk.len() < header_len {
+      bail!(
+        "chunk {index} is {} bytes, shorter than its {header_len}-byte header",
+        chunk.len()
+      );
+    }
 
-  let mut cursor = 0usize;
-  let num_levels = read_u16(chunk, &mut cursor);
-  let rep_bytes = if has_rep {
-    read_u16(chunk, &mut cursor)
-  } else {
-    0
-  };
-  let def_bytes = if has_def {
-    read_u16(chunk, &mut cursor)
-  } else {
-    0
-  };
-  let mut value_sizes = Vec::with_capacity(nbuf);
-  for _ in 0..nbuf {
-    value_sizes.push(if size_width == 4 {
-      read_u32(chunk, &mut cursor)
+    let mut cursor = 0usize;
+    let num_levels = read_u16(chunk, &mut cursor);
+    let rep_bytes = if has_rep {
+      read_u16(chunk, &mut cursor)
     } else {
-      read_u16(chunk, &mut cursor) as u32
-    });
-  }
-
-  let header_bytes = align8(header_len as u64);
-  let mut inner = header_bytes;
-
-  let rep_buffer = if has_rep {
-    let span = ChunkSpan {
-      offset: inner,
-      bytes: rep_bytes as u64,
+      0
     };
-    inner = align8(inner + span.bytes);
-    Some(span)
-  } else {
-    None
-  };
-  let def_buffer = if has_def {
-    let span = ChunkSpan {
-      offset: inner,
-      bytes: def_bytes as u64,
+    let def_bytes = if has_def {
+      read_u16(chunk, &mut cursor)
+    } else {
+      0
     };
-    inner = align8(inner + span.bytes);
-    Some(span)
-  } else {
-    None
-  };
-  let mut value_buffers = Vec::with_capacity(nbuf);
-  for size in &value_sizes {
-    let span = ChunkSpan {
-      offset: inner,
-      bytes: *size as u64,
+    let mut value_sizes = Vec::with_capacity(nbuf);
+    for _ in 0..nbuf {
+      value_sizes.push(if size_width == 4 {
+        read_u32(chunk, &mut cursor)
+      } else {
+        read_u16(chunk, &mut cursor) as u32
+      });
+    }
+
+    let header_bytes = align8(header_len as u64);
+    let mut inner = header_bytes;
+
+    let rep_buffer = if has_rep {
+      let span = ChunkSpan {
+        offset: inner,
+        bytes: rep_bytes as u64,
+      };
+      inner = align8(inner + span.bytes);
+      Some(span)
+    } else {
+      None
     };
-    value_buffers.push(span);
-    inner = align8(inner + span.bytes);
-  }
+    let def_buffer = if has_def {
+      let span = ChunkSpan {
+        offset: inner,
+        bytes: def_bytes as u64,
+      };
+      inner = align8(inner + span.bytes);
+      Some(span)
+    } else {
+      None
+    };
+    let mut value_buffers = Vec::with_capacity(nbuf);
+    for size in &value_sizes {
+      let span = ChunkSpan {
+        offset: inner,
+        bytes: *size as u64,
+      };
+      value_buffers.push(span);
+      inner = align8(inner + span.bytes);
+    }
 
-  if inner != chunk.len() as u64 {
-    warnings.push(format!(
-      "chunk {index}: header/buffers describe {inner} bytes but the chunk is {} bytes",
-      chunk.len()
-    ));
-  }
-  if let Some(span) = rep_buffer
-    && span.offset + span.bytes > chunk.len() as u64
-  {
-    warnings.push(format!(
-      "chunk {index}: repetition levels are out of bounds"
-    ));
-  }
-  if let Some(span) = def_buffer
-    && span.offset + span.bytes > chunk.len() as u64
-  {
-    warnings.push(format!(
-      "chunk {index}: definition levels are out of bounds"
-    ));
-  }
+    if inner != chunk.len() as u64 {
+      warnings.push(format!(
+        "chunk {index}: header/buffers describe {inner} bytes but the chunk is {} bytes",
+        chunk.len()
+      ));
+    }
+    if let Some(span) = rep_buffer
+      && span.offset + span.bytes > chunk.len() as u64
+    {
+      warnings.push(format!(
+        "chunk {index}: repetition levels are out of bounds"
+      ));
+    }
+    if let Some(span) = def_buffer
+      && span.offset + span.bytes > chunk.len() as u64
+    {
+      warnings.push(format!(
+        "chunk {index}: definition levels are out of bounds"
+      ));
+    }
 
-  Ok(Chunk {
-    index,
-    metadata,
-    start: 0,
-    offset,
-    num_levels,
-    rep_buffer,
-    def_buffer,
-    value_buffers,
-    header_bytes,
-    rep_index: None,
-  })
+    Ok(Chunk {
+      index,
+      metadata,
+      start: 0,
+      offset,
+      num_levels,
+      rep_buffer,
+      def_buffer,
+      value_buffers,
+      header_bytes,
+      rep_index: None,
+    })
+  }
 }
 
 fn parse_rep_index(bytes: &[u8], num_chunks: usize, depth: u32) -> Result<Vec<Vec<u64>>> {

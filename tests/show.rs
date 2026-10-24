@@ -117,6 +117,51 @@ fn show_hex_and_raw() {
 }
 
 #[test]
+fn show_detail_v2_2_levels_and_values() {
+  let report = run_json("v2_2.lance", 1, &["--detail"]);
+  let chunk = &report["internals"]["chunks"]["chunks"][0];
+
+  let rep = chunk["rep_levels"].as_array().unwrap();
+  assert_eq!(rep.len(), 1024);
+  assert_eq!(rep[0], 1);
+  assert_eq!(rep[1], 0);
+
+  let def = chunk["def_levels"].as_array().unwrap();
+  assert_eq!(def.len(), 1024);
+  assert_eq!(def[0], 0);
+
+  let values = &chunk["decoded_values"];
+  assert_eq!(values["bits_per_value"], 32);
+  assert_eq!(values["items_per_value"], 1);
+  assert_eq!(values["values"].as_array().unwrap().len(), 1024);
+  assert_eq!(values["values"][0], 0);
+  assert_eq!(values["values"][2], 2);
+
+  assert_eq!(chunk["value_buffer_sizes"], serde_json::json!([1_284]));
+
+  // Detail fields are absent without --detail.
+  let plain = run_json("v2_2.lance", 1, &[]);
+  assert!(
+    plain["internals"]["chunks"]["chunks"][0]
+      .get("rep_levels")
+      .is_none()
+  );
+}
+
+#[test]
+fn show_detail_v2_1_fixed_size_list() {
+  let report = run_json("v2_1.lance", 0, &["--detail"]);
+  let chunk = &report["internals"]["chunks"]["chunks"][0];
+  assert!(chunk.get("rep_levels").is_none());
+  assert!(chunk.get("def_levels").is_none());
+
+  let values = &chunk["decoded_values"];
+  assert_eq!(values["bits_per_value"], 32);
+  assert_eq!(values["items_per_value"], 16);
+  assert_eq!(values["values"].as_array().unwrap().len(), 1024);
+}
+
+#[test]
 fn show_text_v2_1() {
   let output = ldp()
     .args([

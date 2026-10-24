@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 pub mod container;
+pub mod decode;
 pub mod footer;
 pub mod layout;
 pub mod miniblock;

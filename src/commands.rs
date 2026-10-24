@@ -33,6 +33,7 @@ pub fn run(cli: Cli) -> Result<()> {
         hex: args.hex,
         hex_limit: args.hex_limit,
         raw: args.raw,
+        detail: args.detail,
       };
       let report = ShowReport::from_meta(&meta, args.page, &mut source, options)?;
       emit(&report, cli.format)

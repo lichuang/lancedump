@@ -63,6 +63,10 @@ pub struct ShowArgs {
   /// Print the decoded protobuf layout in raw debug form.
   #[arg(long)]
   pub raw: bool,
+
+  /// Decode and print rep/def levels and value arrays for mini-block chunks.
+  #[arg(long, short = 'd')]
+  pub detail: bool,
 }
 
 #[derive(Debug, Args)]
