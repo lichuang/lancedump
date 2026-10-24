@@ -354,21 +354,25 @@ pub fn compression_name(encoding: Option<&pb21::CompressiveEncoding>) -> String 
 
 fn layers_name(layers: &[i32]) -> String {
   if layers.is_empty() {
-    return "none".to_string();
+    return "[]".to_string();
   }
-  layers
+  let joined = layers
     .iter()
-    .map(|layer| match pb21::RepDefLayer::try_from(*layer) {
-      Ok(pb21::RepDefLayer::RepdefAllValidItem) => "all-valid-item",
-      Ok(pb21::RepDefLayer::RepdefAllValidList) => "all-valid-list",
-      Ok(pb21::RepDefLayer::RepdefNullableItem) => "nullable-item",
-      Ok(pb21::RepDefLayer::RepdefNullableList) => "nullable-list",
-      Ok(pb21::RepDefLayer::RepdefEmptyableList) => "emptyable-list",
-      Ok(pb21::RepDefLayer::RepdefNullAndEmptyList) => "nullable+emptyable-list",
-      Ok(pb21::RepDefLayer::RepdefUnspecified) | Err(_) => "unspecified",
+    .map(|layer| {
+      let name = match pb21::RepDefLayer::try_from(*layer) {
+        Ok(pb21::RepDefLayer::RepdefAllValidItem) => "AllValidItem",
+        Ok(pb21::RepDefLayer::RepdefAllValidList) => "AllValidList",
+        Ok(pb21::RepDefLayer::RepdefNullableItem) => "NullableItem",
+        Ok(pb21::RepDefLayer::RepdefNullableList) => "NullableList",
+        Ok(pb21::RepDefLayer::RepdefEmptyableList) => "EmptyableList",
+        Ok(pb21::RepDefLayer::RepdefNullAndEmptyList) => "NullAndEmptyList",
+        Ok(pb21::RepDefLayer::RepdefUnspecified) | Err(_) => "Unspecified",
+      };
+      format!("'{name}'")
     })
     .collect::<Vec<_>>()
-    .join(" -> ")
+    .join(", ");
+  format!("[{joined}]")
 }
 
 pub fn hex_preview(bytes: &[u8]) -> String {

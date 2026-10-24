@@ -131,6 +131,7 @@ fn show_detail_v2_2_levels_and_values() {
   assert_eq!(def[0], 0);
 
   let values = &chunk["decoded_values"];
+  assert_eq!(values["kind"], "fixed");
   assert_eq!(values["bits_per_value"], 32);
   assert_eq!(values["items_per_value"], 1);
   assert_eq!(values["values"].as_array().unwrap().len(), 1024);
@@ -156,9 +157,36 @@ fn show_detail_v2_1_fixed_size_list() {
   assert!(chunk.get("def_levels").is_none());
 
   let values = &chunk["decoded_values"];
+  assert_eq!(values["kind"], "fixed");
   assert_eq!(values["bits_per_value"], 32);
   assert_eq!(values["items_per_value"], 16);
   assert_eq!(values["values"].as_array().unwrap().len(), 1024);
+}
+
+#[test]
+fn show_detail_variable_values() {
+  let report = run_json("variable_strings.lance", 0, &["--detail"]);
+  let chunk = &report["internals"]["chunks"]["chunks"][0];
+  let values = &chunk["decoded_values"];
+  assert_eq!(values["kind"], "variable");
+  assert_eq!(values["bits_per_offset"], 32);
+  assert_eq!(values["values"], serde_json::json!(["a", "b", "c", "d"]));
+  assert_eq!(values["sizes"], serde_json::json!([1, 1, 1, 1]));
+
+  let output = ldp()
+    .args([
+      "show",
+      "-d",
+      "--page",
+      "0",
+      fixture("variable_strings.lance").to_str().unwrap(),
+    ])
+    .output()
+    .unwrap();
+  assert!(output.status.success());
+  let text = String::from_utf8(output.stdout).unwrap();
+  assert!(text.contains("values (4 values, variable, 32-bit offsets)"));
+  assert!(text.contains("[0] (1 bytes) a"));
 }
 
 #[test]

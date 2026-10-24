@@ -17,10 +17,16 @@ use crate::proto::pb21::compressive_encoding::Compression as C;
 const FL_ORDER: [usize; 8] = [0, 4, 2, 6, 1, 5, 3, 7];
 
 #[derive(Debug, Clone)]
-pub struct DecodedValues {
-  pub bits_per_value: u64,
-  pub items_per_value: u64,
-  pub values: Vec<u64>,
+pub enum DecodedValues {
+  Fixed {
+    bits_per_value: u64,
+    items_per_value: u64,
+    values: Vec<u64>,
+  },
+  Variable {
+    bits_per_offset: u64,
+    values: Vec<Vec<u8>>,
+  },
 }
 
 /// Decode rep/def levels. Levels are always 16-bit; the returned vector has
@@ -72,19 +78,19 @@ pub fn decode_values(
     .first()
     .ok_or_else(|| anyhow::anyhow!("value compression has no buffers"))?;
   match compression.compression.as_ref() {
-    Some(C::Flat(flat)) => Ok(DecodedValues {
+    Some(C::Flat(flat)) => Ok(DecodedValues::Fixed {
       bits_per_value: flat.bits_per_value,
       items_per_value: 1,
       values: decode_flat(data, flat.bits_per_value, num_values)?,
     }),
-    Some(C::InlineBitpacking(bitpacking)) => Ok(DecodedValues {
+    Some(C::InlineBitpacking(bitpacking)) => Ok(DecodedValues::Fixed {
       bits_per_value: bitpacking.uncompressed_bits_per_value,
       items_per_value: 1,
       values: unpack_inline(data, bitpacking.uncompressed_bits_per_value, num_values)?,
     }),
     Some(C::OutOfLineBitpacking(bitpacking)) => {
       let compressed_bits = flat_bits(bitpacking.values.as_deref())?;
-      Ok(DecodedValues {
+      Ok(DecodedValues::Fixed {
         bits_per_value: bitpacking.uncompressed_bits_per_value,
         items_per_value: 1,
         values: unpack_out_of_line(
@@ -102,11 +108,28 @@ pub fn decode_values(
         .ok_or_else(|| anyhow::anyhow!("fixed-size-list compression has no child"))?;
       let items = fsl.items_per_value;
       let mut decoded = decode_values(child, buffers, num_values.saturating_mul(items))?;
-      decoded.items_per_value = decoded.items_per_value.saturating_mul(items);
+      match &mut decoded {
+        DecodedValues::Fixed {
+          items_per_value, ..
+        } => *items_per_value = items_per_value.saturating_mul(items),
+        DecodedValues::Variable { .. } => {
+          bail!("fixed-size-list of variable-width values is not supported")
+        }
+      }
       if fsl.has_validity {
         bail!("fixed-size-list validity is not supported by --detail");
       }
       Ok(decoded)
+    }
+    Some(C::Variable(variable)) => {
+      let bits_per_offset = flat_bits(variable.offsets.as_deref())?;
+      if variable.values.is_some() {
+        bail!("variable values with general compression are not supported");
+      }
+      Ok(DecodedValues::Variable {
+        bits_per_offset,
+        values: decode_variable(data, bits_per_offset, num_values)?,
+      })
     }
     Some(_) => bail!(
       "unsupported value compression: {}",
@@ -182,6 +205,50 @@ fn decode_flat(data: &[u8], bits_per_value: u64, num_values: u64) -> Result<Vec<
   for _ in 0..num_values {
     values.push(read_bits(data, bit, width));
     bit += width;
+  }
+  Ok(values)
+}
+
+/// Binary mini-block format: `[num_values+1 offsets][value bytes]`.
+///
+/// Offsets are absolute within the chunk buffer and point into the value
+/// region, which starts after the offset table.
+fn decode_variable(data: &[u8], bits_per_offset: u64, num_values: u64) -> Result<Vec<Vec<u8>>> {
+  if !matches!(bits_per_offset, 32 | 64) {
+    bail!("variable offsets must be 32 or 64 bits, got {bits_per_offset}");
+  }
+  let width = (bits_per_offset / 8) as usize;
+  let count = num_values as usize + 1;
+  if data.len() < count.saturating_mul(width) {
+    bail!(
+      "variable buffer is {} bytes, too small for {count} offsets",
+      data.len()
+    );
+  }
+  let offsets: Vec<usize> = (0..count)
+    .map(|index| read_uint(data, index * width, width) as usize)
+    .collect();
+  if offsets.windows(2).any(|window| window[0] > window[1]) {
+    bail!("variable offsets are not monotonic");
+  }
+  let offsets_end = count * width;
+  if offsets[0] < offsets_end {
+    bail!(
+      "variable value region starts at {} before the offset table ends at {offsets_end}",
+      offsets[0]
+    );
+  }
+  if *offsets.last().unwrap() > data.len() {
+    bail!(
+      "variable value region ends at {} beyond the {} byte buffer",
+      offsets.last().unwrap(),
+      data.len()
+    );
+  }
+
+  let mut values = Vec::with_capacity(num_values as usize);
+  for index in 0..num_values as usize {
+    values.push(data[offsets[index]..offsets[index + 1]].to_vec());
   }
   Ok(values)
 }

@@ -181,12 +181,27 @@ repetition index. The output also reports the page's `column` and per-column
 `page` for cross-referencing.
 
 With `--detail`, each mini-block chunk also prints its decoded repetition levels,
-definition levels, flattened value array (with bit width and items-per-value),
-and value buffer sizes. Arrays are printed in full. Supported compressions are
-flat, RLE, inline/out-of-line bitpacking, and fixed-size-list; other encodings
-(FSST, dictionary, general, variable, packed structs) are reported as warnings.
+definition levels, value array, and value buffer sizes. Arrays are printed in
+full. Fixed-width values show their bit width and items-per-value; variable-width
+values show the offset width, byte size, and UTF-8 text (or hex when not text).
+Supported compressions are flat, RLE, inline/out-of-line bitpacking,
+fixed-size-list, and variable (uncompressed values); other encodings (FSST,
+dictionary, general, packed structs) are reported as warnings.
 Full-zip, constant, and legacy pages currently report that detail decoding is
 only supported for mini-block pages.
+
+```text
+Chunk details
+chunk 0:
+  rep levels (5): [1, 0, 1, 1, 1]
+  def levels (5): [0, 0, 1, 0, 0]
+  values (4 values, variable, 32-bit offsets):
+    [0] (1 bytes) a
+    [1] (1 bytes) b
+    [2] (1 bytes) c
+    [3] (1 bytes) d
+  value buffer sizes (1): [24]
+```
 
 ```bash
 ldp show data/xxxx.lance --page 1
@@ -223,7 +238,7 @@ Layout: mini-block
   def_compression             bitpacking(out-of-line)
   value_compression           bitpacking(inline)
   repetition_index_depth      1
-  layers                      all-valid-item -> nullable+emptyable-list
+  layers                      ['AllValidItem', 'NullAndEmptyList']
 
 Page buffers
 buffer  role              start    end      size

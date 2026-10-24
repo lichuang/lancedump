@@ -75,10 +75,18 @@ pub struct ChunkReport {
 }
 
 #[derive(Debug, Serialize)]
-pub struct DecodedValuesReport {
-  pub bits_per_value: u64,
-  pub items_per_value: u64,
-  pub values: Vec<u64>,
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DecodedValuesReport {
+  Fixed {
+    bits_per_value: u64,
+    items_per_value: u64,
+    values: Vec<u64>,
+  },
+  Variable {
+    bits_per_offset: u64,
+    values: Vec<String>,
+    sizes: Vec<u64>,
+  },
 }
 
 #[derive(Debug, Serialize)]
@@ -593,11 +601,27 @@ fn decode_value_detail(
     buffers.push(bytes);
   }
   match decode::decode_values(compression, &buffers, chunk.metadata.values) {
-    Ok(decoded) => Some(DecodedValuesReport {
-      bits_per_value: decoded.bits_per_value,
-      items_per_value: decoded.items_per_value,
-      values: decoded.values,
+    Ok(decode::DecodedValues::Fixed {
+      bits_per_value,
+      items_per_value,
+      values,
+    }) => Some(DecodedValuesReport::Fixed {
+      bits_per_value,
+      items_per_value,
+      values,
     }),
+    Ok(decode::DecodedValues::Variable {
+      bits_per_offset,
+      values,
+    }) => {
+      let sizes = values.iter().map(|value| value.len() as u64).collect();
+      let values = values.into_iter().map(format_value_bytes).collect();
+      Some(DecodedValuesReport::Variable {
+        bits_per_offset,
+        values,
+        sizes,
+      })
+    }
     Err(error) => {
       warnings.push(format!(
         "chunk {}: failed to decode values: {error:#}",
@@ -624,17 +648,55 @@ fn push_array<T: ToString>(out: &mut String, label: &str, values: &[T]) {
 }
 
 fn push_decoded_values(out: &mut String, values: &DecodedValuesReport) {
-  let items = values.items_per_value.max(1);
-  let logical = values.values.len() as u64 / items;
-  let label = if items > 1 {
-    format!(
-      "values ({logical} x {items} items, {}-bit)",
-      values.bits_per_value
-    )
-  } else {
-    format!("values ({logical}, {}-bit)", values.bits_per_value)
-  };
-  push_array(out, &label, &values.values);
+  match values {
+    DecodedValuesReport::Fixed {
+      bits_per_value,
+      items_per_value,
+      values,
+    } => {
+      let items = (*items_per_value).max(1);
+      let logical = values.len() as u64 / items;
+      let label = if items > 1 {
+        format!("values ({logical} x {items} items, {bits_per_value}-bit)")
+      } else {
+        format!("values ({logical}, {bits_per_value}-bit)")
+      };
+      push_array(out, &label, values);
+    }
+    DecodedValuesReport::Variable {
+      bits_per_offset,
+      values,
+      sizes,
+    } => {
+      let _ = writeln!(
+        out,
+        "  values ({} values, variable, {bits_per_offset}-bit offsets):",
+        values.len()
+      );
+      for (index, (value, size)) in values.iter().zip(sizes).enumerate() {
+        let _ = writeln!(out, "    [{index}] ({size} bytes) {value}");
+      }
+    }
+  }
+}
+
+fn format_value_bytes(bytes: Vec<u8>) -> String {
+  match String::from_utf8(bytes.clone()) {
+    Ok(text)
+      if !text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t') =>
+    {
+      text
+    }
+    _ => {
+      let mut out = String::from("0x");
+      for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+      }
+      out
+    }
+  }
 }
 
 fn try_full_zip_rep_index(
