@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::format::container::{FileMeta, PageMeta};
 use crate::format::decode;
+use crate::format::fullzip;
 use crate::format::layout::{self, DecodedLayout};
 use crate::format::miniblock;
 use crate::format::miniblock::ChunkSpan;
@@ -113,8 +114,22 @@ pub struct RepIndexReport {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PageInternals {
-  MiniBlock { chunks: ChunkTableReport },
-  FullZip { rep_index: Option<RepIndexReport> },
+  MiniBlock {
+    chunks: ChunkTableReport,
+  },
+  FullZip {
+    rep_index: Option<RepIndexReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<FullZipDetailReport>,
+  },
+}
+
+#[derive(Debug, Serialize)]
+pub struct FullZipDetailReport {
+  pub rep_levels: Vec<u16>,
+  pub def_levels: Vec<u16>,
+  pub item_sizes: Vec<u64>,
+  pub decoded_values: DecodedValuesReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,9 +210,21 @@ impl ShowReport {
             }
           }
         }
-        Some(pb21::page_layout::Layout::FullZipLayout(full_zip)) => Some(PageInternals::FullZip {
-          rep_index: try_full_zip_rep_index(full_zip, &buffers, page.num_rows, &mut warnings),
-        }),
+        Some(pb21::page_layout::Layout::FullZipLayout(full_zip)) => {
+          let rep_index = try_full_zip_rep_index(full_zip, &buffers, page.num_rows, &mut warnings);
+          let detail = if options.detail {
+            match fullzip::parse_detail(full_zip, &buffers, &mut warnings) {
+              Ok(detail) => Some(full_zip_detail_report(detail)),
+              Err(error) => {
+                warnings.push(format!("failed to decode full-zip values: {error:#}"));
+                None
+              }
+            }
+          } else {
+            None
+          };
+          Some(PageInternals::FullZip { rep_index, detail })
+        }
         _ => None,
       },
       _ => None,
@@ -208,9 +235,9 @@ impl ShowReport {
         .as_ref()
         .map(|decoded| layout::summary(decoded).kind)
         .unwrap_or("unknown");
-      if kind != "mini-block" {
+      if !matches!(kind, "mini-block" | "full-zip") {
         warnings.push(format!(
-          "detail arrays are only supported for mini-block pages (layout: {kind})"
+          "detail arrays are only supported for mini-block and full-zip pages (layout: {kind})"
         ));
       }
     }
@@ -408,25 +435,45 @@ impl Report for ShowReport {
           }
         }
       }
-      Some(PageInternals::FullZip {
-        rep_index: Some(rep_index),
-      }) => {
-        out.push('\n');
-        let _ = writeln!(
-          out,
-          "{}",
-          style.heading(&format!(
-            "Full-zip repetition index ({} entries, {}-byte entries)",
-            rep_index.num_entries, rep_index.entry_width
-          ))
-        );
-        let shown = rep_index.values.len().min(32);
-        let _ = writeln!(out, "{:?}", &rep_index.values[..shown]);
-        if shown < rep_index.values.len() {
-          let _ = writeln!(out, "... {} more entry(s)", rep_index.values.len() - shown);
+      Some(PageInternals::FullZip { rep_index, detail }) => {
+        if let Some(rep_index) = rep_index {
+          out.push('\n');
+          let _ = writeln!(
+            out,
+            "{}",
+            style.heading(&format!(
+              "Full-zip repetition index ({} entries, {}-byte entries)",
+              rep_index.num_entries, rep_index.entry_width
+            ))
+          );
+          let shown = rep_index.values.len().min(32);
+          let _ = writeln!(out, "{:?}", &rep_index.values[..shown]);
+          if shown < rep_index.values.len() {
+            let _ = writeln!(out, "... {} more entry(s)", rep_index.values.len() - shown);
+          }
+        }
+        if let Some(detail) = detail {
+          out.push('\n');
+          let _ = writeln!(out, "{}", style.heading("Full-zip details"));
+          push_array(
+            &mut out,
+            &format!("rep levels ({})", detail.rep_levels.len()),
+            &detail.rep_levels,
+          );
+          push_array(
+            &mut out,
+            &format!("def levels ({})", detail.def_levels.len()),
+            &detail.def_levels,
+          );
+          push_array(
+            &mut out,
+            &format!("item sizes ({})", detail.item_sizes.len()),
+            &detail.item_sizes,
+          );
+          push_decoded_values(&mut out, &detail.decoded_values);
         }
       }
-      Some(PageInternals::FullZip { rep_index: None }) | None => {}
+      None => {}
     }
 
     if !self.hexdump.is_empty() {
@@ -701,6 +748,37 @@ fn format_value_bytes(bytes: Vec<u8>) -> String {
   }
 }
 
+fn full_zip_detail_report(detail: fullzip::FullZipDetail) -> FullZipDetailReport {
+  let decoded_values = match detail.values {
+    fullzip::FullZipValues::Fixed {
+      bits_per_value,
+      values,
+    } => DecodedValuesReport::Fixed {
+      bits_per_value,
+      items_per_value: 1,
+      values,
+    },
+    fullzip::FullZipValues::Variable {
+      bits_per_offset,
+      values,
+    } => {
+      let sizes = values.iter().map(|value| value.len() as u64).collect();
+      let values = values.into_iter().map(format_value_bytes).collect();
+      DecodedValuesReport::Variable {
+        bits_per_offset,
+        values,
+        sizes,
+      }
+    }
+  };
+  FullZipDetailReport {
+    rep_levels: detail.rep_levels,
+    def_levels: detail.def_levels,
+    item_sizes: detail.item_sizes,
+    decoded_values,
+  }
+}
+
 fn try_full_zip_rep_index(
   layout: &pb21::FullZipLayout,
   buffers: &[Vec<u8>],
@@ -719,7 +797,7 @@ fn try_full_zip_rep_index(
     warnings.push("full-zip page declares a repetition index but has no buffer 1".to_string());
     return None;
   };
-  match miniblock::parse_full_zip_rep_index(bytes, num_rows) {
+  match fullzip::parse_rep_index(bytes, num_rows) {
     Ok((width, values)) => Some(RepIndexReport {
       entry_width: width,
       num_entries: values.len(),
@@ -810,7 +888,11 @@ mod tests {
 
   #[test]
   fn serializes_internals_as_tagged_enum() {
-    let json = serde_json::to_value(PageInternals::FullZip { rep_index: None }).unwrap();
+    let json = serde_json::to_value(PageInternals::FullZip {
+      rep_index: None,
+      detail: None,
+    })
+    .unwrap();
     assert_eq!(json["kind"], "full-zip");
     assert!(json["rep_index"].is_null());
   }

@@ -173,7 +173,8 @@ full-zip repetition index（自动推断 1/2/4/8 字节宽度）、`--hex` / `--
 / `--raw` / `--detail`，text / json 两种格式。`--detail` 会解码 mini-block 的
 rep/def levels、value 数组和 value buffer sizes（flat / RLE / inline 与
 out-of-line bitpacking / fixed-size-list / variable；其它压缩降级为 warning）。
-变长值输出为 UTF-8 文本（不可打印时输出十六进制）及其字节数。测试覆盖 v2.1 mini-block、v2.2 mini-block+repdef、
+变长值输出为 UTF-8 文本（不可打印时输出十六进制）及其字节数。full-zip 页
+通过 control word 解码 rep/def、逐 item 大小和 value 数组。测试覆盖 v2.1 mini-block、v2.2 mini-block+repdef、
 v2.2 constant、v2.0 legacy，以及 hex/raw。
 
 目标：单页完整解剖。

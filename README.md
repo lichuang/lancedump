@@ -187,8 +187,9 @@ values show the offset width, byte size, and UTF-8 text (or hex when not text).
 Supported compressions are flat, RLE, inline/out-of-line bitpacking,
 fixed-size-list, and variable (uncompressed values); other encodings (FSST,
 dictionary, general, packed structs) are reported as warnings.
-Full-zip, constant, and legacy pages currently report that detail decoding is
-only supported for mini-block pages.
+Full-zip pages are decoded from their control words and value stream. Constant
+and legacy pages currently report that detail decoding is only supported for
+mini-block and full-zip pages.
 
 ```text
 Chunk details

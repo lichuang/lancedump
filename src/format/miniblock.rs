@@ -428,35 +428,6 @@ fn parse_rep_index(bytes: &[u8], num_chunks: usize, depth: u32) -> Result<Vec<Ve
   Ok(out)
 }
 
-/// Decode a FullZip repetition index.
-///
-/// FullZip writes a byte-packed index with a width chosen from the maximum
-/// offset: 1, 2, 4, or 8 bytes. There is one entry per row plus a final
-/// sentinel, so the width can be recovered from the buffer length.
-pub fn parse_full_zip_rep_index(bytes: &[u8], num_rows: u64) -> Result<(usize, Vec<u64>)> {
-  let entries = num_rows as usize + 1;
-  if entries == 0 || !bytes.len().is_multiple_of(entries) {
-    bail!(
-      "full-zip repetition index is {} bytes, not divisible into {entries} entries",
-      bytes.len()
-    );
-  }
-  let width = bytes.len() / entries;
-  if !matches!(width, 1 | 2 | 4 | 8) {
-    bail!("full-zip repetition index entry width must be 1/2/4/8 bytes, got {width}");
-  }
-  let values = bytes
-    .chunks_exact(width)
-    .map(|chunk| match width {
-      1 => chunk[0] as u64,
-      2 => u16::from_le_bytes(chunk.try_into().unwrap()) as u64,
-      4 => u32::from_le_bytes(chunk.try_into().unwrap()) as u64,
-      _ => u64::from_le_bytes(chunk.try_into().unwrap()),
-    })
-    .collect();
-  Ok((width, values))
-}
-
 fn read_u16(bytes: &[u8], cursor: &mut usize) -> u16 {
   let value = u16::from_le_bytes(bytes[*cursor..*cursor + 2].try_into().unwrap());
   *cursor += 2;

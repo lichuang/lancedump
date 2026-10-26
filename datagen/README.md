@@ -21,5 +21,19 @@ Outputs:
 The Lance dataset directory (manifest + data file) is created in a temporary
 directory and discarded; only the bare data file is kept.
 
+## `fullzip-strings.data.py`
+
+Generates a FullZip page with eight long variable-width strings, used by the
+FullZip `show --detail` tests.
+
+```bash
+uv run --no-project --with pyarrow --with pylance python datagen/fullzip-strings.data.py
+```
+
+Outputs:
+
+- `data/fullzip-strings.data.lance`
+- `tests/fixtures/fullzip_strings.lance`
+
 The script prints the Lance library version and the dataset storage version so
 format changes are visible when regenerating the fixture.

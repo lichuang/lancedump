@@ -170,7 +170,10 @@ fn show_detail_variable_values() {
   let values = &chunk["decoded_values"];
   assert_eq!(values["kind"], "variable");
   assert_eq!(values["bits_per_offset"], 32);
-  assert_eq!(values["values"], serde_json::json!(["Hi", "a", "Hello", "test"]));
+  assert_eq!(
+    values["values"],
+    serde_json::json!(["Hi", "a", "Hello", "test"])
+  );
   assert_eq!(values["sizes"], serde_json::json!([2, 1, 5, 4]));
 
   let output = ldp()
@@ -189,6 +192,53 @@ fn show_detail_variable_values() {
   assert!(text.contains("[0] (2 bytes) Hi"));
   assert!(text.contains("value sizes (4): [2, 1, 5, 4]"));
   assert!(text.contains("value buffer sizes (1 buffer)"));
+}
+
+#[test]
+fn show_detail_fullzip_variable_values() {
+  let report = run_json("fullzip_strings.lance", 0, &["--detail"]);
+  assert_eq!(report["internals"]["kind"], "full-zip");
+  assert!(!report["internals"]["rep_index"].is_null());
+
+  let detail = &report["internals"]["detail"];
+  assert_eq!(
+    detail["rep_levels"],
+    serde_json::json!([0, 0, 0, 0, 0, 0, 0, 0])
+  );
+  assert_eq!(
+    detail["def_levels"],
+    serde_json::json!([0, 0, 0, 0, 0, 0, 0, 0])
+  );
+  assert_eq!(
+    detail["item_sizes"],
+    serde_json::json!([307, 307, 307, 307, 307, 307, 307, 307])
+  );
+
+  let values = &detail["decoded_values"];
+  assert_eq!(values["kind"], "variable");
+  assert_eq!(values["bits_per_offset"], 32);
+  assert_eq!(values["values"].as_array().unwrap().len(), 8);
+  assert!(values["values"][0].as_str().unwrap().starts_with("row-00-"));
+  assert_eq!(
+    values["sizes"],
+    serde_json::json!([307, 307, 307, 307, 307, 307, 307, 307])
+  );
+
+  let output = ldp()
+    .args([
+      "show",
+      "-d",
+      "--page",
+      "0",
+      fixture("fullzip_strings.lance").to_str().unwrap(),
+    ])
+    .output()
+    .unwrap();
+  assert!(output.status.success());
+  let text = String::from_utf8(output.stdout).unwrap();
+  assert!(text.contains("Full-zip details"));
+  assert!(text.contains("item sizes (8): [307, 307"));
+  assert!(text.contains("values (8 values, variable, 32-bit offsets)"));
 }
 
 #[test]
